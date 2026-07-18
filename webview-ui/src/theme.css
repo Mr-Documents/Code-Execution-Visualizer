@@ -1,0 +1,77 @@
+:root {
+  /* Dark Cyberpunk Theme (Default) */
+  --bg-color: #0A0F1C;
+  --panel-bg: rgba(15, 23, 42, 0.6);
+  --panel-border: rgba(0, 255, 255, 0.3);
+  --text-primary: #e2e8f0;
+  --text-secondary: #94a3b8;
+  
+  --neon-cyan: #00f3ff;
+  --neon-purple: #b500ff;
+  --neon-pink: #ff007f;
+  
+  --glow-cyan: 0 0 10px rgba(0, 243, 255, 0.5), 0 0 20px rgba(0, 243, 255, 0.3);
+  --glow-purple: 0 0 10px rgba(181, 0, 255, 0.5), 0 0 20px rgba(181, 0, 255, 0.3);
+  
+  --grid-pattern: linear-gradient(rgba(0, 243, 255, 0.05) 1px, transparent 1px),
+                  linear-gradient(90deg, rgba(0, 243, 255, 0.05) 1px, transparent 1px);
+}
+
+/* Light Cyberpunk Theme (Adapts to VS Code Light Mode) */
+@media (prefers-color-scheme: light) {
+  :root {
+    --bg-color: #f1f5f9;
+    --panel-bg: rgba(255, 255, 255, 0.7);
+    --panel-border: rgba(0, 180, 255, 0.5);
+    --text-primary: #0f172a;
+    --text-secondary: #475569;
+    
+    --neon-cyan: #00a2ff;
+    --neon-purple: #8b00ff;
+    --neon-pink: #d9006b;
+    
+    --glow-cyan: 0 0 10px rgba(0, 162, 255, 0.4), 0 0 20px rgba(0, 162, 255, 0.2);
+    --glow-purple: 0 0 10px rgba(139, 0, 255, 0.4), 0 0 20px rgba(139, 0, 255, 0.2);
+    
+    --grid-pattern: linear-gradient(rgba(0, 162, 255, 0.08) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(0, 162, 255, 0.08) 1px, transparent 1px);
+  }
+}
+
+/* Global Styles */
+body {
+  margin: 0;
+  padding: 0;
+  background-color: var(--bg-color);
+  background-image: var(--grid-pattern);
+  background-size: 30px 30px;
+  color: var(--text-primary);
+  font-family: 'Inter', 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  overflow: hidden;
+}
+
+/* Glassmorphism Panel Utility */
+.glass-panel {
+  background: var(--panel-bg);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid var(--panel-border);
+  border-radius: 12px;
+  box-shadow: var(--glow-cyan);
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.2);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--panel-border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--neon-cyan);
+}
