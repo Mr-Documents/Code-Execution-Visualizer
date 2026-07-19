@@ -6,7 +6,7 @@ export class ExecutionManager {
 
   constructor(private readonly extensionUri: vscode.Uri) {}
 
-  public startVisualization() {
+  public async startVisualization() {
     if (this.panel) {
       this.panel.reveal(vscode.ViewColumn.Two);
       return;
@@ -23,14 +23,16 @@ export class ExecutionManager {
       }
     );
 
-    this.panel.webview.html = this.getHtmlForWebview();
+    this.panel.webview.html = await this.getHtmlForWebview();
 
     this.panel.onDidDispose(() => {
       this.panel = undefined;
     }, null);
 
     // TODO: Initialize adapters and start sending data
-    this.sendMockData();
+    setTimeout(() => {
+      this.sendMockData();
+    }, 1000);
   }
 
   private sendMockData() {
@@ -74,30 +76,24 @@ export class ExecutionManager {
     }
   }
 
-  private getHtmlForWebview(): string {
-    // In production, this reads from webview-ui/dist/index.html and replaces paths
-    // For development (Vite dev server), we point to localhost.
-    
-    // Simplistic HTML to load the built assets
+  private async getHtmlForWebview(): Promise<string> {
     const webviewUri = this.panel?.webview;
     if (!webviewUri) return '';
 
-    const scriptUri = webviewUri.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'webview-ui', 'dist', 'assets', 'index.js'));
-    const styleUri = webviewUri.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'webview-ui', 'dist', 'assets', 'index.css'));
+    // Read the actual built index.html
+    const indexPath = vscode.Uri.joinPath(this.extensionUri, 'webview-ui', 'dist', 'index.html');
+    const htmlContent = await vscode.workspace.fs.readFile(indexPath);
+    let html = Buffer.from(htmlContent).toString('utf-8');
 
-    return `<!DOCTYPE html>
-      <html lang="en">
-      <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Code Execution Visualizer</title>
-        <link rel="stylesheet" href="${styleUri}">
-      </head>
-      <body>
-        <div id="root"></div>
-        <script type="module" src="${scriptUri}"></script>
-      </body>
-      </html>`;
+    // Replace asset paths with webview URIs
+    const distUri = vscode.Uri.joinPath(this.extensionUri, 'webview-ui', 'dist');
+    const webviewDistUri = webviewUri.asWebviewUri(distUri);
+
+    // Replace relative paths with webview URIs
+    html = html.replace(/href="\/assets\//g, `href="${webviewDistUri}/assets/`);
+    html = html.replace(/src="\/assets\//g, `src="${webviewDistUri}/assets/`);
+
+    return html;
   }
 
   public dispose() {
