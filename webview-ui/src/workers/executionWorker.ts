@@ -1,7 +1,9 @@
 // Web Worker for processing execution events in the background
 // This prevents the main React UI thread from freezing when processing 10,000+ events
 
-self.onmessage = (e: MessageEvent) => {
+const ctx: Worker = self as any;
+
+ctx.onmessage = (e: MessageEvent) => {
   const { type, payload } = e.data;
 
   switch (type) {
@@ -17,10 +19,11 @@ self.onmessage = (e: MessageEvent) => {
         };
       });
 
-      self.postMessage({
+      ctx.postMessage({
         type: 'EVENTS_PROCESSED',
         payload: processedEvents
       });
       break;
   }
 };
+

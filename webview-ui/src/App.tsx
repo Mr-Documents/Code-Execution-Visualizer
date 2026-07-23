@@ -13,22 +13,17 @@ function App() {
   } = useExecutionStore();
 
   useEffect(() => {
-    // Initialize Web Worker
-    const worker = new Worker(new URL('./workers/executionWorker.ts', import.meta.url), { type: 'module' });
-
-    worker.onmessage = (e: MessageEvent) => {
-      if (e.data.type === 'EVENTS_PROCESSED') {
-        setEvents(e.data.payload);
-      }
-    };
-
     // Listen for messages from the VS Code extension
     const handleMessage = (event: MessageEvent) => {
       const message = event.data;
       switch (message.command) {
         case 'EXECUTION_EVENTS':
-          // Offload to Web Worker instead of freezing main thread
-          worker.postMessage({ type: 'PARSE_EVENTS', payload: message.payload });
+          // Process directly to avoid Web Worker CSP/path issues in VS Code
+          const processedEvents = message.payload.map((evt: any, index: number) => ({
+            ...evt,
+            id: `step-${index}`
+          }));
+          setEvents(processedEvents);
           break;
       }
     };
@@ -36,9 +31,10 @@ function App() {
     window.addEventListener('message', handleMessage);
     return () => {
       window.removeEventListener('message', handleMessage);
-      worker.terminate();
     };
   }, [setEvents]);
+
+
 
   // Auto-playback effect
   useEffect(() => {

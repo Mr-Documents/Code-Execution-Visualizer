@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import { join } from 'path';
 
 export class ExecutionManager {
   private panel: vscode.WebviewPanel | undefined;
