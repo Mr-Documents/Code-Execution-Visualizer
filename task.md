@@ -1,0 +1,18 @@
+- `[ ]` Upgrade Python Tracer (`src/adapters/python/tracer.py`)
+  - `[ ]` Capture call stack frames
+  - `[ ]` Intercept standard output (prints)
+  - `[ ]` Track object references (heap map)
+- `[ ]` Upgrade JavaScript Tracer (`src/adapters/javascript/tracer.js`)
+  - `[ ]` Capture call stack frames
+  - `[ ]` Intercept console.log output
+  - `[ ]` Track object references (heap map)
+- `[ ]` Update VS Code Extension core
+  - `[ ]` Modify `ExecutionManager.ts` to send code content and pipe tracer outputs
+- `[ ]` Implement Webview Store & Components
+  - `[ ]` Update `useExecutionStore.ts` for code content, speed, console state
+  - `[ ]` Render actual code file and highlight current line in code viewer
+  - `[ ]` Render Call Stack list
+  - `[ ]` Render Console Panel
+  - `[ ]` Render Current State panel
+  - `[ ]` Implement adjustable execution speed controls
+- `[ ]` Verify changes with test scripts
