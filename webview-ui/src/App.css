@@ -127,6 +127,7 @@
 
 .neon-slider {
   -webkit-appearance: none;
+  appearance: none;
   width: 100%;
   height: 4px;
   background: rgba(0, 255, 255, 0.2);
@@ -136,6 +137,7 @@
 
 .neon-slider::-webkit-slider-thumb {
   -webkit-appearance: none;
+  appearance: none;
   width: 16px;
   height: 16px;
   border-radius: 50%;
