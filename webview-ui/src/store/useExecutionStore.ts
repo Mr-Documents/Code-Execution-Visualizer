@@ -1,23 +1,38 @@
 import { create } from 'zustand';
 
-// Types for the MVP execution events
+export interface VariableValue {
+  type: string;
+  value: unknown;
+  /** Id of the referenced object in the heap, for non-primitive values. */
+  ref?: string;
+}
+
+export interface HeapObject {
+  type: string;
+  value: unknown;
+  refs?: string[];
+  /** Set when the tracer's traversal caps stopped this object being expanded. */
+  truncated?: boolean;
+}
+
 export interface ExecutionEvent {
-  type: 'STEP' | 'EXCEPTION' | 'CALL' | 'RETURN' | 'ERROR' | 'END' | 'LIMIT';
+  /**
+   * STEP  — one executed line
+   * ERROR — uncaught exception; terminal
+   * LIMIT — step cap hit (probable infinite loop); terminal
+   * END   — finished normally; terminal
+   */
+  type: 'STEP' | 'ERROR' | 'END' | 'LIMIT';
   line: number;
   scope: Record<string, VariableValue>;
   callStack?: string[];
-  heap?: Record<string, any>;
-  stdout?: string;
+  heap?: Record<string, HeapObject>;
+  /** Console output since the previous event, not the running total. */
+  stdoutDelta?: string;
   error?: string;
 }
 
-export interface VariableValue {
-  type: string;
-  value: any;
-  ref?: string; // ID of object in heap
-}
-
-export type ExecutionPhase = 'idle' | 'loading' | 'ready' | 'unsupported';
+export type ExecutionPhase = 'idle' | 'loading' | 'ready' | 'unsupported' | 'failed';
 
 interface ExecutionState {
   events: ExecutionEvent[];
@@ -29,11 +44,13 @@ interface ExecutionState {
   language: string;
   phase: ExecutionPhase;
   unsupportedExt?: string;
+  failureMessage?: string;
 
   // Actions
   startExecution: (data: { code: string; fileName: string; language: string }) => void;
-  appendEvent: (event: ExecutionEvent) => void;
+  appendEvents: (events: ExecutionEvent[]) => void;
   markUnsupported: (ext: string) => void;
+  markFailed: (message: string) => void;
   nextStep: () => void;
   prevStep: () => void;
   jumpToStep: (step: number) => void;
@@ -41,34 +58,55 @@ interface ExecutionState {
   setPlaybackSpeed: (speed: number) => void;
 }
 
-export const useExecutionStore = create<ExecutionState>((set, get) => ({
-  events: [],
+const initialState = {
+  events: [] as ExecutionEvent[],
   currentStep: 0,
   isPlaying: false,
-  playbackSpeed: 800, // default Speed (Medium)
+  playbackSpeed: 800, // Medium
   code: '',
   fileName: '',
   language: '',
-  phase: 'idle',
+  phase: 'idle' as ExecutionPhase,
   unsupportedExt: undefined,
+  failureMessage: undefined
+};
+
+export const useExecutionStore = create<ExecutionState>((set, get) => ({
+  ...initialState,
 
   startExecution: (data) => set({
-    events: [],
+    ...initialState,
     code: data.code,
     fileName: data.fileName,
     language: data.language,
-    currentStep: 0,
-    isPlaying: false,
-    phase: 'loading',
-    unsupportedExt: undefined
+    phase: 'loading'
   }),
 
-  appendEvent: (event) => set((state) => ({
-    events: [...state.events, event],
-    phase: 'ready'
-  })),
+  /**
+   * Appends a batch of events in a single update. Events arrive batched from
+   * the extension so a long trace costs a handful of renders rather than one
+   * per executed line.
+   */
+  appendEvents: (incoming) => {
+    if (incoming.length === 0) return;
+    set((state) => ({
+      events: state.events.concat(incoming),
+      phase: state.phase === 'loading' || state.phase === 'idle' ? 'ready' : state.phase
+    }));
+  },
 
-  markUnsupported: (ext) => set({ phase: 'unsupported', unsupportedExt: ext, events: [] }),
+  markUnsupported: (ext) => set({
+    ...initialState,
+    phase: 'unsupported',
+    unsupportedExt: ext
+  }),
+
+  markFailed: (message) => set((state) => ({
+    ...state,
+    phase: 'failed',
+    isPlaying: false,
+    failureMessage: message
+  })),
 
   nextStep: () => {
     const { currentStep, events } = get();
@@ -78,22 +116,18 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
       set({ isPlaying: false });
     }
   },
-  
+
   prevStep: () => {
     const { currentStep } = get();
-    if (currentStep > 0) {
-      set({ currentStep: currentStep - 1 });
-    }
+    if (currentStep > 0) set({ currentStep: currentStep - 1 });
   },
-  
+
   jumpToStep: (step) => {
     const { events } = get();
-    if (step >= 0 && step < events.length) {
-      set({ currentStep: step });
-    }
+    if (step >= 0 && step < events.length) set({ currentStep: step });
   },
-  
+
   togglePlayback: () => set((state) => ({ isPlaying: !state.isPlaying })),
-  
+
   setPlaybackSpeed: (playbackSpeed) => set({ playbackSpeed })
 }));

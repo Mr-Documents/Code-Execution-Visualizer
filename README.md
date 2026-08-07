@@ -188,6 +188,15 @@ npm run build
 npm run compile
 ```
 
+### Debugging the tracers
+
+The tracers are silent by default — verbose V8 Inspector protocol logging easily
+exceeds the size of the actual trace. Set `CEV_TRACER_DEBUG=1` to turn it on:
+
+```bash
+CEV_TRACER_DEBUG=1 node src/adapters/javascript/tracer.js path/to/script.js
+```
+
 ---
 
 ## 🎨 UI Components

@@ -50,7 +50,7 @@
     "package": "webpack --mode production --devtool hidden-source-map",
     "build:webview": "cd webview-ui && npm run build",
     "install:all": "npm install && cd webview-ui && npm install",
-    "test:tracer": "node --test test/tracer.test.js test/python-tracer.test.js",
+    "test:tracer": "node --test test/tracer.test.js test/python-tracer.test.js test/webviewHtml.test.js test/adapter.test.js",
     "test:webview": "cd webview-ui && npm test",
     "test": "npm run test:tracer && npm run test:webview"
   },

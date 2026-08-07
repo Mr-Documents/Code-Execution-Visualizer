@@ -1,16 +1,10 @@
 import React, { useMemo } from 'react';
-import ReactFlow, { 
-  Background, 
-  Controls, 
-  MarkerType,
-  BackgroundVariant
-} from 'reactflow';
+import ReactFlow, { Background, Controls, MarkerType, BackgroundVariant } from 'reactflow';
 import type { Node, Edge } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { useExecutionStore } from '../store/useExecutionStore';
 
-// Custom node style to match cyberpunk theme
-const nodeStyle = {
+const NODE_STYLE = {
   background: 'var(--panel-bg)',
   color: 'var(--text-primary)',
   border: '1px solid var(--neon-cyan)',
@@ -20,96 +14,100 @@ const nodeStyle = {
   fontFamily: 'monospace',
   fontSize: '12px',
   minWidth: '100px',
-  textAlign: 'center' as const,
+  textAlign: 'center' as const
 };
 
+const VARIABLE_NODE_STYLE = {
+  ...NODE_STYLE,
+  border: '1px solid var(--neon-purple)',
+  boxShadow: 'var(--glow-purple)'
+};
+
+const COLUMNS = 3;
+const COLUMN_WIDTH = 200;
+const ROW_HEIGHT = 150;
+
+/** Keeps node labels readable when an object holds a lot of data. */
+function formatValue(value: unknown): string {
+  const text = typeof value === 'string' ? value : JSON.stringify(value);
+  if (!text) return '';
+  return text.length > 120 ? `${text.slice(0, 117)}…` : text;
+}
+
+/** Visualizes heap objects and the references between them. */
 export const ReferenceGraph: React.FC = () => {
-  const { events, currentStep } = useExecutionStore();
+  const events = useExecutionStore((state) => state.events);
+  const currentStep = useExecutionStore((state) => state.currentStep);
   const currentEvent = events[currentStep];
 
-  // Derive nodes and edges from the current heap/scope state
   const { nodes, edges } = useMemo(() => {
-    if (!currentEvent || !currentEvent.heap) {
-      return { nodes: [], edges: [] };
-    }
+    const heap = currentEvent?.heap;
+    if (!heap) return { nodes: [] as Node[], edges: [] as Edge[] };
 
-    const newNodes: Node[] = [];
-    const newEdges: Edge[] = [];
+    const nodes: Node[] = [];
+    const edges: Edge[] = [];
 
-    // Map the heap objects to React Flow nodes
-    Object.entries(currentEvent.heap).forEach(([id, obj], index) => {
-      // Basic layout algorithm: place nodes in a grid or circle
-      // For MVP, just space them out simply
-      const x = (index % 3) * 200 + 50;
-      const y = Math.floor(index / 3) * 150 + 50;
-
-      newNodes.push({
+    Object.entries(heap).forEach(([id, object], index) => {
+      nodes.push({
         id,
-        position: { x, y },
-        data: { label: `${obj.type} \n ${JSON.stringify(obj.value)}` },
-        style: nodeStyle,
+        position: {
+          x: (index % COLUMNS) * COLUMN_WIDTH + 50,
+          y: Math.floor(index / COLUMNS) * ROW_HEIGHT + 50
+        },
+        data: {
+          label: `${object.type}${object.truncated ? ' (truncated)' : ''}\n${formatValue(object.value)}`
+        },
+        style: NODE_STYLE
+      });
+    });
+
+    // ReactFlow throws on an edge whose endpoint doesn't exist. Truncated or
+    // failed traversals can leave references pointing at objects that were
+    // never recorded, so every endpoint is checked before the edge is added.
+    const exists = (id: string) => Object.prototype.hasOwnProperty.call(heap, id);
+
+    Object.entries(heap).forEach(([id, object]) => {
+      for (const refId of object.refs ?? []) {
+        if (!exists(refId)) continue;
+        edges.push({
+          id: `e-${id}-${refId}`,
+          source: id,
+          target: refId,
+          animated: true,
+          style: { stroke: 'var(--neon-pink)', strokeWidth: 2 },
+          markerEnd: { type: MarkerType.ArrowClosed, color: 'var(--neon-pink)' }
+        });
+      }
+    });
+
+    Object.entries(currentEvent.scope ?? {}).forEach(([name, variable], index) => {
+      if (!variable.ref || !exists(variable.ref)) return;
+
+      const variableNodeId = `var-${name}`;
+      nodes.push({
+        id: variableNodeId,
+        position: { x: 50 + index * 100, y: 0 },
+        data: { label: `Var: ${name}` },
+        style: VARIABLE_NODE_STYLE
       });
 
-      // If the object has references to other objects, create edges
-      if (obj.refs && Array.isArray(obj.refs)) {
-        obj.refs.forEach((refId: string) => {
-          newEdges.push({
-            id: `e-${id}-${refId}`,
-            source: id,
-            target: refId,
-            animated: true,
-            style: { stroke: 'var(--neon-pink)', strokeWidth: 2 },
-            markerEnd: {
-              type: MarkerType.ArrowClosed,
-              color: 'var(--neon-pink)',
-            },
-          });
-        });
-      }
+      edges.push({
+        id: `e-${variableNodeId}-${variable.ref}`,
+        source: variableNodeId,
+        target: variable.ref,
+        animated: true,
+        style: { stroke: 'var(--neon-purple)', strokeWidth: 2, strokeDasharray: '5,5' },
+        markerEnd: { type: MarkerType.ArrowClosed, color: 'var(--neon-purple)' }
+      });
     });
 
-    // Also add variables from the scope that reference the heap
-    Object.entries(currentEvent.scope).forEach(([varName, variable], index) => {
-      if (variable.ref) {
-        const varNodeId = `var-${varName}`;
-        newNodes.push({
-          id: varNodeId,
-          position: { x: 50 + index * 100, y: 0 },
-          data: { label: `Var: ${varName}` },
-          style: { ...nodeStyle, border: '1px solid var(--neon-purple)', boxShadow: 'var(--glow-purple)' },
-        });
-
-        newEdges.push({
-          id: `e-${varNodeId}-${variable.ref}`,
-          source: varNodeId,
-          target: variable.ref,
-          animated: true,
-          style: { stroke: 'var(--neon-purple)', strokeWidth: 2, strokeDasharray: '5,5' },
-          markerEnd: {
-            type: MarkerType.ArrowClosed,
-            color: 'var(--neon-purple)',
-          },
-        });
-      }
-    });
-
-    return { nodes: newNodes, edges: newEdges };
+    return { nodes, edges };
   }, [currentEvent]);
 
   return (
     <div style={{ width: '100%', height: '100%' }}>
-      <ReactFlow 
-        nodes={nodes} 
-        edges={edges}
-        fitView
-        attributionPosition="bottom-right"
-      >
-        <Background 
-          variant={BackgroundVariant.Dots} 
-          gap={20} 
-          size={1} 
-          color="rgba(0, 243, 255, 0.2)" 
-        />
+      <ReactFlow nodes={nodes} edges={edges} fitView attributionPosition="bottom-right">
+        <Background variant={BackgroundVariant.Dots} gap={20} size={1} color="rgba(0, 243, 255, 0.2)" />
         <Controls />
       </ReactFlow>
     </div>

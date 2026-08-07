@@ -1,36 +1,38 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useExecutionStore, type ExecutionEvent } from './useExecutionStore';
 
-const stepEvent = (line: number, overrides: Partial<ExecutionEvent> = {}): ExecutionEvent => ({
+const step = (line: number, overrides: Partial<ExecutionEvent> = {}): ExecutionEvent => ({
   type: 'STEP',
   line,
   scope: {},
   callStack: [],
-  ...overrides,
+  ...overrides
 });
 
-// Zustand stores are module-level singletons, so state must be reset between
-// tests to keep them independent.
-beforeEach(() => {
-  useExecutionStore.setState({
-    events: [],
-    currentStep: 0,
-    isPlaying: false,
-    playbackSpeed: 800,
-    code: '',
-    fileName: '',
-    language: '',
-    phase: 'idle',
-    unsupportedExt: undefined,
-  });
+const reset = () => useExecutionStore.setState({
+  events: [],
+  currentStep: 0,
+  isPlaying: false,
+  playbackSpeed: 800,
+  code: '',
+  fileName: '',
+  language: '',
+  phase: 'idle',
+  unsupportedExt: undefined,
+  failureMessage: undefined
 });
+
+// The store is a module-level singleton, so state must be reset between tests.
+beforeEach(reset);
 
 describe('startExecution', () => {
   it('resets the timeline and enters the loading phase', () => {
-    useExecutionStore.getState().appendEvent(stepEvent(1));
-    useExecutionStore.setState({ currentStep: 0, isPlaying: true });
+    useExecutionStore.getState().appendEvents([step(1)]);
+    useExecutionStore.setState({ isPlaying: true });
 
-    useExecutionStore.getState().startExecution({ code: 'x = 1', fileName: 'a.js', language: 'javascript' });
+    useExecutionStore.getState().startExecution({
+      code: 'x = 1', fileName: 'a.js', language: 'javascript'
+    });
 
     const state = useExecutionStore.getState();
     expect(state.events).toEqual([]);
@@ -40,29 +42,54 @@ describe('startExecution', () => {
     expect(state.code).toBe('x = 1');
     expect(state.fileName).toBe('a.js');
     expect(state.language).toBe('javascript');
-    expect(state.unsupportedExt).toBeUndefined();
+  });
+
+  it('clears a previous run failure', () => {
+    useExecutionStore.getState().markFailed('node not found');
+
+    useExecutionStore.getState().startExecution({ code: '', fileName: 'b.js', language: 'javascript' });
+
+    expect(useExecutionStore.getState().failureMessage).toBeUndefined();
+    expect(useExecutionStore.getState().phase).toBe('loading');
   });
 });
 
-describe('appendEvent', () => {
-  it('appends events incrementally and flips phase to ready', () => {
-    const { appendEvent } = useExecutionStore.getState();
+describe('appendEvents', () => {
+  it('appends a batch in order and flips phase to ready', () => {
+    useExecutionStore.getState().appendEvents([step(1), step(2)]);
 
-    appendEvent(stepEvent(1));
-    expect(useExecutionStore.getState().events).toHaveLength(1);
-    expect(useExecutionStore.getState().phase).toBe('ready');
-
-    appendEvent(stepEvent(2));
     const state = useExecutionStore.getState();
-    expect(state.events).toHaveLength(2);
-    expect(state.events[0].line).toBe(1);
-    expect(state.events[1].line).toBe(2);
+    expect(state.events.map((e) => e.line)).toEqual([1, 2]);
+    expect(state.phase).toBe('ready');
+  });
+
+  it('accumulates across batches without dropping earlier events', () => {
+    const { appendEvents } = useExecutionStore.getState();
+    appendEvents([step(1), step(2)]);
+    appendEvents([step(3)]);
+
+    expect(useExecutionStore.getState().events.map((e) => e.line)).toEqual([1, 2, 3]);
+  });
+
+  it('ignores an empty batch', () => {
+    useExecutionStore.getState().appendEvents([]);
+
+    const state = useExecutionStore.getState();
+    expect(state.events).toEqual([]);
+    expect(state.phase).toBe('idle');
+  });
+
+  it('does not overwrite a terminal failure phase', () => {
+    useExecutionStore.getState().markFailed('tracer died');
+    useExecutionStore.getState().appendEvents([step(1)]);
+
+    expect(useExecutionStore.getState().phase).toBe('failed');
   });
 });
 
 describe('markUnsupported', () => {
-  it('sets the unsupported phase and clears any prior events', () => {
-    useExecutionStore.getState().appendEvent(stepEvent(1));
+  it('sets the unsupported phase and clears prior events', () => {
+    useExecutionStore.getState().appendEvents([step(1)]);
 
     useExecutionStore.getState().markUnsupported('.txt');
 
@@ -73,15 +100,27 @@ describe('markUnsupported', () => {
   });
 });
 
+describe('markFailed', () => {
+  it('records the message, stops playback, and keeps events for inspection', () => {
+    useExecutionStore.getState().appendEvents([step(1), step(2)]);
+    useExecutionStore.setState({ isPlaying: true });
+
+    useExecutionStore.getState().markFailed('Could not find node on your PATH.');
+
+    const state = useExecutionStore.getState();
+    expect(state.phase).toBe('failed');
+    expect(state.failureMessage).toBe('Could not find node on your PATH.');
+    expect(state.isPlaying).toBe(false);
+    expect(state.events).toHaveLength(2);
+  });
+});
+
 describe('step navigation', () => {
   beforeEach(() => {
-    const { appendEvent } = useExecutionStore.getState();
-    appendEvent(stepEvent(1));
-    appendEvent(stepEvent(2));
-    appendEvent(stepEvent(3));
+    useExecutionStore.getState().appendEvents([step(1), step(2), step(3)]);
   });
 
-  it('nextStep advances while more events remain', () => {
+  it('nextStep advances while events remain', () => {
     useExecutionStore.getState().nextStep();
     expect(useExecutionStore.getState().currentStep).toBe(1);
   });
@@ -101,28 +140,52 @@ describe('step navigation', () => {
   });
 
   it('jumpToStep ignores out-of-range targets', () => {
-    useExecutionStore.getState().jumpToStep(-1);
+    const { jumpToStep } = useExecutionStore.getState();
+
+    jumpToStep(-1);
     expect(useExecutionStore.getState().currentStep).toBe(0);
 
-    useExecutionStore.getState().jumpToStep(99);
+    jumpToStep(99);
     expect(useExecutionStore.getState().currentStep).toBe(0);
 
-    useExecutionStore.getState().jumpToStep(2);
+    jumpToStep(2);
     expect(useExecutionStore.getState().currentStep).toBe(2);
   });
 });
 
 describe('playback controls', () => {
   it('togglePlayback flips isPlaying', () => {
-    expect(useExecutionStore.getState().isPlaying).toBe(false);
-    useExecutionStore.getState().togglePlayback();
+    const { togglePlayback } = useExecutionStore.getState();
+
+    togglePlayback();
     expect(useExecutionStore.getState().isPlaying).toBe(true);
-    useExecutionStore.getState().togglePlayback();
+
+    togglePlayback();
     expect(useExecutionStore.getState().isPlaying).toBe(false);
   });
 
   it('setPlaybackSpeed updates the speed', () => {
     useExecutionStore.getState().setPlaybackSpeed(300);
     expect(useExecutionStore.getState().playbackSpeed).toBe(300);
+  });
+});
+
+describe('console output reconstruction', () => {
+  // Events carry per-step deltas; the UI concatenates them up to the current
+  // step. This guards the contract both sides depend on.
+  it('concatenating deltas up to a step yields the output at that step', () => {
+    useExecutionStore.getState().appendEvents([
+      step(1, { stdoutDelta: 'a\n' }),
+      step(2, { stdoutDelta: '' }),
+      step(3, { stdoutDelta: 'b\n' })
+    ]);
+
+    const { events } = useExecutionStore.getState();
+    const outputAt = (i: number) =>
+      events.slice(0, i + 1).map((e) => e.stdoutDelta ?? '').join('');
+
+    expect(outputAt(0)).toBe('a\n');
+    expect(outputAt(1)).toBe('a\n');
+    expect(outputAt(2)).toBe('a\nb\n');
   });
 });

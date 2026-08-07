@@ -50,4 +50,9 @@ function resolvePythonBin() {
     throw new Error("Neither 'python3' nor 'python' is available on PATH.");
 }
 
-module.exports = { runTracer, resolvePythonBin };
+/** Rebuilds the program's console output from per-event stdout deltas. */
+function consoleOutput(events) {
+    return events.map((event) => event.stdoutDelta || '').join('');
+}
+
+module.exports = { runTracer, resolvePythonBin, consoleOutput };

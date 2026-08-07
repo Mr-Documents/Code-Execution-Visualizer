@@ -1,25 +1,87 @@
+/**
+ * JavaScript execution tracer.
+ *
+ * Spawns the target script under `node --inspect-brk`, drives it one line at a
+ * time over the V8 Inspector protocol, and emits a newline-delimited JSON
+ * event per executed line on stdout.
+ *
+ * The WebSocket client is hand-rolled (over a raw net.Socket) so the tracer has
+ * no runtime dependencies and can be shipped as a single file.
+ */
 const { spawn } = require('child_process');
 const path = require('path');
 const net = require('net');
 const crypto = require('crypto');
+const { pathToFileURL, fileURLToPath } = require('url');
+
+// Verbose protocol logging is opt-in: it easily outdoes the real payload in
+// volume, and the extension pipes our stderr into the host's output channel.
+const DEBUG = !!process.env.CEV_TRACER_DEBUG;
+
+/** Halt runaway programs. Also bounds worst-case trace size. */
+const MAX_STEPS = 5000;
+/** Per-step caps on object-graph traversal. Each step re-walks reachable
+ *  objects from scratch (V8 re-issues object ids on every pause, so results
+ *  can't be cached), which makes an unbounded walk the dominant cost. */
+const MAX_HEAP_OBJECTS = 150;
+const MAX_DEPTH = 5;
+const MAX_PROPS = 100;
+/** Enough to find the inspector URL; prevents unbounded growth on a chatty child. */
+const MAX_STDERR_BUFFER = 64 * 1024;
 
 if (process.argv.length < 3) {
-    console.error('Usage: node tracer.js <target_file>');
+    process.stderr.write('Usage: node tracer.js <target_file>\n');
     process.exit(1);
 }
 
 const targetFile = path.resolve(process.argv[2]);
+const targetFileUrl = pathToFileURL(targetFile).href;
 
-// Spawn node with debugger paused on start
 const child = spawn('node', ['--inspect-brk=0', targetFile]);
 
 let stdoutBuffer = '';
+let stdoutSent = 0;
 let stderrBuffer = '';
 let wsClient = null;
-
-const MAX_STEPS = 5000;
 let stepCount = 0;
-let terminatedEarly = false; // set once we've already sent a LIMIT/ERROR event, to suppress the exit handler's END
+/** Set once a terminal event (ERROR/LIMIT) has been emitted, so the exit and
+ *  context-destroyed handlers don't append a contradictory END after it. */
+let finished = false;
+
+function debug(message) {
+    if (DEBUG) process.stderr.write(`[tracer] ${message}\n`);
+}
+
+/** Windows paths are case-insensitive and mix separators; normalize for compare. */
+function normalizePath(p) {
+    const unified = p.replace(/\\/g, '/');
+    return process.platform === 'win32' ? unified.toLowerCase() : unified;
+}
+const targetPathNorm = normalizePath(targetFile);
+
+/**
+ * True if a script URL refers to the file being traced.
+ *
+ * Matching on basename alone gives false positives for common names — a target
+ * `index.js` would match every `index.js` in node_modules — so resolve file
+ * URLs to real paths and compare them in full.
+ */
+function isTargetUrl(url) {
+    if (!url) return false;
+    if (url === targetFileUrl) return true;
+    if (url.startsWith('file://')) {
+        try {
+            return normalizePath(fileURLToPath(url)) === targetPathNorm;
+        } catch {
+            return false;
+        }
+    }
+    return normalizePath(url) === targetPathNorm;
+}
+
+function escapeRegExp(str) {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
 
 child.stdout.on('data', (data) => {
     stdoutBuffer += data.toString();
@@ -27,50 +89,63 @@ child.stdout.on('data', (data) => {
 
 child.stderr.on('data', (data) => {
     const str = data.toString();
-    stderrBuffer += str;
-    
-    // Log child stderr for debugging
-    process.stderr.write(`[Child Stderr] ${str}`);
-    
-    // If not connected yet, try to find the debug socket URL
-    if (!wsClient) {
-        const match = stderrBuffer.match(/ws:\/\/127\.0\.0\.1:\d+\/[a-f0-9-]+/);
-        if (match) {
-            const wsUrl = match[0];
-            connectDebugWS(wsUrl);
-        }
-    }
+    if (DEBUG) process.stderr.write(`[child] ${str}`);
+
+    if (wsClient) return; // Already connected; no need to keep scanning or buffering.
+
+    if (stderrBuffer.length < MAX_STDERR_BUFFER) stderrBuffer += str;
+
+    const match = stderrBuffer.match(/ws:\/\/127\.0\.0\.1:\d+\/[a-f0-9-]+/);
+    if (match) connectDebugWS(match[0]);
 });
 
+/**
+ * Emits one execution event.
+ *
+ * `stdoutDelta` carries only what the program printed since the previous event.
+ * Sending the full cumulative buffer each time made total output quadratic in
+ * step count; consumers rebuild the running console by concatenating deltas.
+ */
 function sendEvent(type, line, scope, heap, callStack, error = undefined) {
+    const delta = stdoutBuffer.slice(stdoutSent);
+    stdoutSent = stdoutBuffer.length;
+
     const event = {
         type,
         line,
         scope,
         heap,
         callStack,
-        stdout: stdoutBuffer,
+        stdoutDelta: delta,
         ...(error ? { error } : {})
     };
     process.stdout.write(JSON.stringify(event) + '\n');
 }
 
+/** Renders a non-object remote value as a display string. */
 function safeValue(obj) {
     if (obj.type === 'object' && obj.subtype === 'null') return 'null';
     if (obj.type === 'undefined') return 'undefined';
     if (obj.type === 'object') return obj.className || 'Object';
     if (obj.type === 'function') return 'Function';
+    // bigint/symbol and friends arrive without a JSON-serializable `value`.
+    if (obj.unserializableValue !== undefined) return String(obj.unserializableValue);
+    if (obj.value === undefined) return obj.description !== undefined ? String(obj.description) : '';
     return String(obj.value);
 }
 
-// Low-level net.Socket WebSocket client for V8 DevTools Debugger
+/** Composes the display type for a remote object, e.g. `object (array)`. */
+function describeType(remoteObject) {
+    return remoteObject.type + (remoteObject.subtype ? ` (${remoteObject.subtype})` : '');
+}
+
 function connectDebugWS(url) {
-    process.stderr.write(`[Tracer Debug] Connecting to ${url}\n`);
+    debug(`connecting to ${url}`);
     const parsed = new URL(url);
     const host = parsed.hostname;
     const port = parsed.port || 80;
     const requestPath = parsed.pathname + parsed.search;
-    
+
     const key = crypto.randomBytes(16).toString('base64');
     const socket = net.connect(port, host, () => {
         socket.write(
@@ -84,44 +159,54 @@ function connectDebugWS(url) {
     });
 
     let handshaken = false;
+    let handshakeBuffer = '';
     let buffer = Buffer.alloc(0);
+    /** Reassembly state for fragmented WebSocket messages. */
+    let fragments = [];
+    let fragmentOpcode = null;
+    let closed = false;
 
     const pendingRequests = new Map();
     let idCounter = 1;
 
+    /** Rejects every in-flight command so awaiting callers can't hang forever. */
+    function failPending(reason) {
+        for (const { reject } of pendingRequests.values()) reject(new Error(reason));
+        pendingRequests.clear();
+    }
+
     function sendCommand(method, params = {}) {
+        if (closed || socket.destroyed) {
+            return Promise.reject(new Error('inspector socket is closed'));
+        }
         return new Promise((resolve, reject) => {
             const id = idCounter++;
             pendingRequests.set(id, { resolve, reject });
             const msg = JSON.stringify({ id, method, params });
-            
-            process.stderr.write(`[Tracer Debug] Send Command: ${msg}\n`);
+            debug(`send ${method}`);
 
             const payload = Buffer.from(msg, 'utf8');
             const len = payload.length;
-            let header;
-            
-            // Masking is REQUIRED for client frames sent to server
+            // Client-to-server frames must be masked (RFC 6455 §5.3).
             const mask = crypto.randomBytes(4);
-            
+            let header;
+
             if (len < 126) {
                 header = Buffer.alloc(6);
-                header[0] = 0x81; // text, fin
                 header[1] = len | 0x80;
                 mask.copy(header, 2);
             } else if (len < 65536) {
                 header = Buffer.alloc(8);
-                header[0] = 0x81;
                 header[1] = 126 | 0x80;
                 header.writeUInt16BE(len, 2);
                 mask.copy(header, 4);
             } else {
                 header = Buffer.alloc(14);
-                header[0] = 0x81;
                 header[1] = 127 | 0x80;
                 header.writeBigUInt64BE(BigInt(len), 2);
                 mask.copy(header, 10);
             }
+            header[0] = 0x81; // FIN + text frame
 
             const maskedPayload = Buffer.alloc(len);
             for (let i = 0; i < len; i++) {
@@ -132,244 +217,271 @@ function connectDebugWS(url) {
         });
     }
 
-    const heap = {};
-    const seenObjects = new Set();
-    // Debugger.paused callFrames often carry an empty `url` — the reliable way
-    // to resolve a frame's source file is via its scriptId through this map,
-    // built from Debugger.scriptParsed events.
-    const scriptUrls = {};
+    /** scriptId -> url, from Debugger.scriptParsed. Paused call frames frequently
+     *  carry an empty `url`, so the scriptId is the only reliable source. */
+    const scriptUrls = new Map();
     function resolveFrameUrl(frame) {
-        return frame.url || scriptUrls[frame.location.scriptId] || '';
+        return frame.url || scriptUrls.get(frame.location.scriptId) || '';
     }
 
-    async function processObject(objectId, type) {
-        if (seenObjects.has(objectId)) return objectId;
-        seenObjects.add(objectId);
+    function isTargetFrame(frame) {
+        return isTargetUrl(resolveFrameUrl(frame));
+    }
 
-        // Function objects' prototype/constructor chain leads into built-ins
-        // (Function.prototype.constructor -> Function -> prototype -> ...).
-        // V8 mints a fresh objectId every time that chain is inspected, so the
-        // seenObjects dedup above never catches it and this recurses forever.
-        // Functions aren't useful in a heap view anyway — record them shallowly.
+    function targetCallStack(callFrames) {
+        return callFrames
+            .filter(isTargetFrame)
+            .map((f) => f.functionName || '<anonymous>')
+            .reverse();
+    }
+
+    /**
+     * Walks an object graph into `heap`, bounded by depth/breadth/total caps.
+     *
+     * Without caps a single large collection turns into thousands of sequential
+     * round trips *per step*, and a deeply linked structure can overflow the
+     * stack. Truncated entries are flagged so the UI can say so.
+     */
+    async function processObject(objectId, type, ctx, depth = 0) {
+        if (ctx.seen.has(objectId)) return;
+        ctx.seen.add(objectId);
+
+        // A function's prototype/constructor chain runs off into built-ins, and
+        // V8 mints a fresh object id each time it's inspected, so `seen` never
+        // catches the cycle. Functions carry no useful state — record shallowly.
         if (type.startsWith('function')) {
-            heap[objectId] = { type, value: 'function', refs: [] };
-            return objectId;
+            ctx.heap[objectId] = { type, value: 'function', refs: [] };
+            return;
         }
 
+        if (depth >= MAX_DEPTH || ctx.count >= MAX_HEAP_OBJECTS) {
+            ctx.heap[objectId] = { type, value: '…', refs: [], truncated: true };
+            return;
+        }
+        ctx.count++;
+
+        let result;
         try {
-            const result = await sendCommand('Runtime.getProperties', {
-                objectId,
+            result = await sendCommand('Runtime.getProperties', { objectId, ownProperties: true });
+        } catch {
+            ctx.heap[objectId] = { type, value: '<unavailable>', refs: [] };
+            return;
+        }
+
+        const value = {};
+        const refs = [];
+        const isArray = type.includes('array');
+        const pending = [];
+        let truncated = false;
+        let propCount = 0;
+
+        for (const prop of result.result || []) {
+            if (!prop.value || !prop.name) continue;
+            // Skip prototype plumbing — it's noise in a heap view and the source
+            // of the runaway recursion described above.
+            if (prop.name === '__proto__' || prop.name === 'constructor' || prop.name === 'prototype') continue;
+            if (isArray && prop.name === 'length') continue;
+
+            if (propCount >= MAX_PROPS) {
+                truncated = true;
+                break;
+            }
+            propCount++;
+
+            if (prop.value.objectId) {
+                const refId = prop.value.objectId;
+                refs.push(refId);
+                value[prop.name] = `[Ref: ${refId}]`;
+                // Fetch siblings concurrently: each round trip costs ~1ms of
+                // protocol latency, and a wide object would otherwise serialize
+                // one per property. Dedup stays correct because `seen`/`count`
+                // are updated synchronously on entry, before any await.
+                pending.push(processObject(refId, describeType(prop.value), ctx, depth + 1));
+            } else {
+                value[prop.name] = safeValue(prop.value);
+            }
+        }
+
+        ctx.heap[objectId] = { type, value, refs, ...(truncated ? { truncated: true } : {}) };
+        if (pending.length) await Promise.all(pending);
+    }
+
+    /** Names injected by the CommonJS wrapper — not the user's variables. */
+    const MODULE_WRAPPER_NAMES = new Set([
+        'exports', 'require', 'module', '__filename', '__dirname'
+    ]);
+
+    /** Captures the visible scope and reachable heap for a paused frame. */
+    async function captureState(frame) {
+        const ctx = { heap: {}, seen: new Set(), count: 0 };
+        const scope = {};
+
+        const localScope = frame.scopeChain.find((s) => s.type === 'local' || s.type === 'block');
+        if (!localScope || !localScope.object.objectId) return { scope, heap: ctx.heap };
+
+        let result;
+        try {
+            result = await sendCommand('Runtime.getProperties', {
+                objectId: localScope.object.objectId,
                 ownProperties: true
             });
-
-            const value = {};
-            const refs = [];
-
-            for (const prop of result.result || []) {
-                if (!prop.value || !prop.name) continue;
-                if (prop.name === '__proto__' || prop.name === 'constructor' || prop.name === 'prototype') continue;
-                if (prop.name === 'length' && type.includes('Array')) continue;
-
-                if (prop.value.objectId) {
-                    const refId = prop.value.objectId;
-                    refs.push(refId);
-                    value[prop.name] = `[Ref: ${refId}]`;
-                    await processObject(refId, prop.value.type + (prop.value.subtype ? ` (${prop.value.subtype})` : ''));
-                } else {
-                    value[prop.name] = safeValue(prop.value);
-                }
-            }
-
-            heap[objectId] = {
-                type,
-                value,
-                refs
-            };
-        } catch (e) {
-            // Ignore
+        } catch {
+            return { scope, heap: ctx.heap };
         }
-        return objectId;
+
+        const pending = [];
+        for (const prop of result.result || []) {
+            if (!prop.name || MODULE_WRAPPER_NAMES.has(prop.name) || !prop.value) continue;
+
+            const type = describeType(prop.value);
+            if (prop.value.objectId) {
+                scope[prop.name] = { type, value: prop.value.type, ref: prop.value.objectId };
+                pending.push(processObject(prop.value.objectId, type, ctx));
+            } else {
+                scope[prop.name] = { type, value: safeValue(prop.value) };
+            }
+        }
+        await Promise.all(pending);
+
+        return { scope, heap: ctx.heap };
+    }
+
+    /** Emits a terminal event and tears down the run. */
+    function terminate(type, line, scope, heap, callStack, error) {
+        if (finished) return;
+        finished = true;
+        sendEvent(type, line, scope, heap, callStack, error);
+        close();
+        child.kill();
+    }
+
+    async function handlePaused(params) {
+        const callFrames = params.callFrames;
+        if (!callFrames || callFrames.length === 0) {
+            sendCommand('Debugger.resume').catch(() => {});
+            return;
+        }
+
+        if (params.reason === 'exception' || params.reason === 'promiseRejection') {
+            const frame = callFrames[0];
+            const line = isTargetFrame(frame) ? frame.location.lineNumber + 1 : -1;
+            const data = params.data || {};
+            const message = data.description
+                ? String(data.description).split('\n')[0]
+                : data.className || 'Uncaught exception';
+            terminate('ERROR', line, {}, {}, targetCallStack(callFrames), message);
+            return;
+        }
+
+        const frame = callFrames[0];
+        if (!isTargetFrame(frame)) {
+            // We're inside library or Node-internal code (e.g. within console.log).
+            // Step back out to the caller — `resume` would run to the next
+            // breakpoint, of which there are none, skipping the rest of the trace.
+            sendCommand('Debugger.stepOut').catch(() => {});
+            return;
+        }
+
+        const line = frame.location.lineNumber + 1;
+        const callStack = targetCallStack(callFrames);
+        const { scope, heap } = await captureState(frame);
+
+        if (++stepCount > MAX_STEPS) {
+            terminate('LIMIT', line, scope, heap, callStack);
+            return;
+        }
+
+        sendEvent('STEP', line, scope, heap, callStack);
+        sendCommand('Debugger.stepInto').catch(() => {});
     }
 
     async function handleMessage(msgStr) {
-        process.stderr.write(`[Tracer Debug] Received Msg: ${msgStr.substring(0, 300)}\n`);
-        const msg = JSON.parse(msgStr);
-        
-        // Resolve command responses
-        if (msg.id && pendingRequests.has(msg.id)) {
+        let msg;
+        try {
+            msg = JSON.parse(msgStr);
+        } catch {
+            debug(`ignoring non-JSON frame (${msgStr.length} bytes)`);
+            return;
+        }
+
+        if (msg.id !== undefined && pendingRequests.has(msg.id)) {
             const { resolve, reject } = pendingRequests.get(msg.id);
             pendingRequests.delete(msg.id);
-            if (msg.error) reject(msg.error);
+            if (msg.error) reject(new Error(msg.error.message || 'inspector command failed'));
             else resolve(msg.result);
             return;
         }
 
-        if (msg.method === 'Debugger.scriptParsed') {
-            scriptUrls[msg.params.scriptId] = msg.params.url;
-        }
-
-        // Handle execution context destroyed (script finished)
-        if (msg.method === 'Runtime.executionContextDestroyed') {
-            process.stderr.write(`[Tracer Debug] Execution context destroyed. Closing...\n`);
-            sendEvent('END', -1, {}, {}, []);
-            if (wsClient) wsClient.close();
-            process.exit(0);
-        }
-
-        // Handle Debugger events
-        if (msg.method === 'Debugger.paused') {
-            const callFrames = msg.params.callFrames;
-            if (!callFrames || callFrames.length === 0) {
-                sendCommand('Debugger.resume');
+        switch (msg.method) {
+            case 'Debugger.scriptParsed':
+                scriptUrls.set(msg.params.scriptId, msg.params.url);
                 return;
-            }
-
-            if (msg.params.reason === 'exception' || msg.params.reason === 'promiseRejection') {
-                const excFrame = callFrames[0];
-                const excFrameUrl = resolveFrameUrl(excFrame);
-                const excIsTarget = excFrameUrl && (excFrameUrl === targetFile || excFrameUrl.includes(path.basename(targetFile)));
-                const excLine = excIsTarget ? excFrame.location.lineNumber + 1 : -1;
-                const excCallStack = callFrames
-                    .filter(f => {
-                        const url = resolveFrameUrl(f);
-                        return url && (url === targetFile || url.includes(path.basename(targetFile)));
-                    })
-                    .map(f => f.functionName || '<anonymous>')
-                    .reverse();
-
-                const exceptionObj = msg.params.data;
-                let message = 'Uncaught exception';
-                if (exceptionObj) {
-                    if (exceptionObj.description) {
-                        message = exceptionObj.description.split('\n')[0];
-                    } else if (exceptionObj.className) {
-                        message = exceptionObj.className;
-                    }
+            case 'Runtime.executionContextDestroyed':
+                if (!finished) {
+                    finished = true;
+                    sendEvent('END', -1, {}, {}, []);
                 }
-
-                terminatedEarly = true;
-                sendEvent('ERROR', excLine, {}, {}, excCallStack, message);
-                if (wsClient) wsClient.close();
-                child.kill();
+                close();
+                process.exit(0);
                 return;
-            }
-
-            const frame = callFrames[0];
-            const frameUrl = resolveFrameUrl(frame);
-            const isTarget = frameUrl && (frameUrl === targetFile || frameUrl.includes(path.basename(targetFile)));
-
-            if (!isTarget) {
-                // We've stepped into library/Node-internal code (e.g. inside
-                // console.log). Step back OUT to the caller instead of
-                // resuming — resume runs freely to the next breakpoint (there
-                // isn't one), which would blow past the rest of the trace.
-                sendCommand('Debugger.stepOut');
+            case 'Debugger.paused':
+                await handlePaused(msg.params);
                 return;
-            }
-
-            const line = frame.location.lineNumber + 1;
-
-            const callStack = callFrames
-                .filter(f => {
-                    const url = resolveFrameUrl(f);
-                    return url && (url === targetFile || url.includes(path.basename(targetFile)));
-                })
-                .map(f => f.functionName || '<anonymous>')
-                .reverse();
-
-            const localScope = frame.scopeChain.find(s => s.type === 'local' || s.type === 'block');
-            const scopeData = {};
-
-            Object.keys(heap).forEach(k => delete heap[k]);
-            seenObjects.clear();
-
-            if (localScope && localScope.object.objectId) {
-                try {
-                    const result = await sendCommand('Runtime.getProperties', {
-                        objectId: localScope.object.objectId,
-                        ownProperties: true
-                    });
-
-                    for (const prop of result.result || []) {
-                        if (!prop.name || prop.name === 'exports' || prop.name === 'require' || prop.name === 'module' || prop.name === '__filename' || prop.name === '__dirname') {
-                            continue;
-                        }
-
-                        if (prop.value) {
-                            if (prop.value.objectId) {
-                                const refId = prop.value.objectId;
-                                scopeData[prop.name] = {
-                                    type: prop.value.type + (prop.value.subtype ? ` (${prop.value.subtype})` : ''),
-                                    value: prop.value.type,
-                                    ref: refId
-                                };
-                                await processObject(refId, prop.value.type + (prop.value.subtype ? ` (${prop.value.subtype})` : ''));
-                            } else {
-                                scopeData[prop.name] = {
-                                    type: prop.value.type + (prop.value.subtype ? ` (${prop.value.subtype})` : ''),
-                                    value: safeValue(prop.value)
-                                };
-                            }
-                        }
-                    }
-                } catch (e) {
-                    // Ignore scope properties error
-                }
-            }
-
-            stepCount++;
-            if (stepCount > MAX_STEPS) {
-                terminatedEarly = true;
-                sendEvent('LIMIT', line, scopeData, heap, callStack);
-                if (wsClient) wsClient.close();
-                child.kill();
+            default:
                 return;
-            }
-
-            sendEvent('STEP', line, scopeData, heap, callStack);
-            sendCommand('Debugger.stepInto');
         }
+    }
+
+    function close() {
+        if (closed) return;
+        closed = true;
+        failPending('inspector socket closed');
+        socket.destroy();
     }
 
     socket.on('data', (chunk) => {
         if (!handshaken) {
-            const str = chunk.toString();
-            if (str.includes('HTTP/1.1 101')) {
-                handshaken = true;
-                process.stderr.write('[Tracer Debug] Upgrade successful via net.connect!\n');
-                const idx = str.indexOf('\r\n\r\n');
-                chunk = idx !== -1 ? chunk.slice(idx + 4) : Buffer.alloc(0);
-                
-                // Initialize inspector settings once handshaken
-                sendCommand('Debugger.enable').then(() => {
-                    return sendCommand('Runtime.enable');
-                }).then(() => {
-                    // Pause on uncaught exceptions so we can report them as an
-                    // ERROR event instead of letting the child crash silently.
-                    return sendCommand('Debugger.setPauseOnExceptions', { state: 'uncaught' });
-                }).then(() => {
-                    // Set breakpoint on target file line 0 to catch start of user code
-                    const escapedFilename = path.basename(targetFile).replace(/\./g, '\\.');
-                    return sendCommand('Debugger.setBreakpointByUrl', {
-                        lineNumber: 0,
-                        urlRegex: `.*${escapedFilename}`
-                    });
-                }).then(() => {
-                    return sendCommand('Runtime.runIfWaitingForDebugger');
-                }).catch(e => {
-                    console.error('Failed to initialize inspector:', e);
-                    process.exit(1);
-                });
-            } else {
+            handshakeBuffer += chunk.toString('latin1');
+            const headerEnd = handshakeBuffer.indexOf('\r\n\r\n');
+            if (headerEnd === -1) return; // Response split across chunks; wait for more.
+
+            if (!handshakeBuffer.startsWith('HTTP/1.1 101')) {
+                process.stderr.write('[tracer] inspector refused the WebSocket upgrade\n');
+                close();
                 return;
             }
+
+            handshaken = true;
+            debug('websocket upgrade complete');
+            // Anything after the header terminator is already frame data.
+            chunk = Buffer.from(handshakeBuffer.slice(headerEnd + 4), 'latin1');
+            handshakeBuffer = '';
+
+            sendCommand('Debugger.enable')
+                .then(() => sendCommand('Runtime.enable'))
+                // Pause on uncaught exceptions so they surface as ERROR events
+                // rather than the child dying silently.
+                .then(() => sendCommand('Debugger.setPauseOnExceptions', { state: 'uncaught' }))
+                .then(() => sendCommand('Debugger.setBreakpointByUrl', {
+                    lineNumber: 0,
+                    urlRegex: `.*${escapeRegExp(path.basename(targetFile))}$`
+                }))
+                .then(() => sendCommand('Runtime.runIfWaitingForDebugger'))
+                .catch((e) => {
+                    process.stderr.write(`[tracer] failed to initialize inspector: ${e.message}\n`);
+                    process.exit(1);
+                });
         }
 
         buffer = Buffer.concat([buffer, chunk]);
+
         while (buffer.length >= 2) {
+            const firstByte = buffer[0];
             const secondByte = buffer[1];
+            const isFinal = (firstByte & 0x80) !== 0;
+            const opcode = firstByte & 0x0f;
             const hasMask = (secondByte & 0x80) !== 0;
-            let payloadLength = secondByte & 0x7F;
+            let payloadLength = secondByte & 0x7f;
             let headerLength = 2;
 
             if (payloadLength === 126) {
@@ -385,45 +497,75 @@ function connectDebugWS(url) {
             let mask = null;
             if (hasMask) {
                 if (buffer.length < headerLength + 4) break;
-                mask = buffer.slice(headerLength, headerLength + 4);
+                mask = buffer.subarray(headerLength, headerLength + 4);
                 headerLength += 4;
             }
 
             if (buffer.length < headerLength + payloadLength) break;
 
-            const payload = buffer.slice(headerLength, headerLength + payloadLength);
-            buffer = buffer.slice(headerLength + payloadLength);
+            const payload = Buffer.from(buffer.subarray(headerLength, headerLength + payloadLength));
+            buffer = buffer.subarray(headerLength + payloadLength);
 
             if (mask) {
-                for (let i = 0; i < payload.length; i++) {
-                    payload[i] ^= mask[i % 4];
-                }
+                for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i % 4];
             }
 
-            handleMessage(payload.toString('utf8')).catch(console.error);
+            if (opcode === 0x8) { // close
+                close();
+                return;
+            }
+            if (opcode === 0x9) { // ping — reply so the peer doesn't drop us
+                const pong = Buffer.concat([Buffer.from([0x8a, 0x80]), crypto.randomBytes(4)]);
+                if (!socket.destroyed) socket.write(pong);
+                continue;
+            }
+            if (opcode === 0xa) continue; // pong
+
+            if (opcode === 0x0) {
+                fragments.push(payload);
+            } else if (opcode === 0x1) {
+                fragments = [payload];
+                fragmentOpcode = opcode;
+            } else {
+                continue; // binary or reserved — the inspector protocol is text-only
+            }
+
+            if (!isFinal) continue;
+            if (fragmentOpcode !== 0x1) { fragments = []; continue; }
+
+            const message = Buffer.concat(fragments).toString('utf8');
+            fragments = [];
+            fragmentOpcode = null;
+            handleMessage(message).catch((e) => debug(`message handler error: ${e.message}`));
         }
     });
 
     socket.on('error', (err) => {
-        console.error('Socket error during connection:', err);
+        debug(`socket error: ${err.message}`);
+        failPending(`inspector socket error: ${err.message}`);
     });
 
-    wsClient = {
-        sendCommand,
-        close: () => socket.destroy()
-    };
+    socket.on('close', () => {
+        failPending('inspector socket closed');
+    });
+
+    wsClient = { sendCommand, close };
 }
 
 child.on('exit', (code) => {
-    if (!terminatedEarly) {
+    if (!finished) {
+        finished = true;
         sendEvent('END', -1, {}, {}, []);
     }
     if (wsClient) wsClient.close();
-    process.exit(code);
+    process.exit(code === null ? 0 : code);
 });
 
 child.on('error', (err) => {
-    sendEvent('ERROR', -1, {}, {}, [], err.message);
+    if (!finished) {
+        finished = true;
+        sendEvent('ERROR', -1, {}, {}, [], `Failed to run node: ${err.message}`);
+    }
     if (wsClient) wsClient.close();
     process.exit(1);
 });

@@ -28,6 +28,8 @@ export interface HeapObject {
     type: string;
     value: any;
     refs: string[];
+    /** Set when traversal caps stopped this object from being fully expanded. */
+    truncated?: boolean;
 }
 
 export interface Heap {
@@ -35,9 +37,22 @@ export interface Heap {
 }
 
 export interface ExecutionEvent {
+    /**
+     * STEP  — one executed line
+     * ERROR — uncaught exception; terminal
+     * LIMIT — step cap hit (probable infinite loop); terminal
+     * END   — program finished normally; terminal
+     */
     type: 'STEP' | 'ERROR' | 'END' | 'LIMIT';
     line: number;
     scope: Scope;
     heap: Heap;
+    callStack?: string[];
+    /**
+     * Console output produced since the *previous* event, not the running total.
+     * Consumers concatenate deltas to rebuild output at a given step; sending
+     * the cumulative buffer each time made total payload quadratic in steps.
+     */
+    stdoutDelta?: string;
     error?: string;
 }
