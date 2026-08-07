@@ -35,7 +35,7 @@ export interface Heap {
 }
 
 export interface ExecutionEvent {
-    type: 'STEP' | 'ERROR' | 'END';
+    type: 'STEP' | 'ERROR' | 'END' | 'LIMIT';
     line: number;
     scope: Scope;
     heap: Heap;

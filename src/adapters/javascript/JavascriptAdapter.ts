@@ -1,9 +1,7 @@
 import { EventEmitter } from 'events';
 import { spawn, ChildProcess } from 'child_process';
-import * as path from 'path';
 import { ITracerAdapter, ExecutionEvent } from '../Adapter';
 import * as vscode from 'vscode';
-import * as fs from 'fs';
 
 export class JavascriptAdapter extends EventEmitter implements ITracerAdapter {
     private process: ChildProcess | undefined;
@@ -13,7 +11,7 @@ export class JavascriptAdapter extends EventEmitter implements ITracerAdapter {
     }
 
     public start(filePath: string): void {
-        const tracerPath = vscode.Uri.joinPath(this.extensionUri, 'src', 'adapters', 'javascript', 'tracer.js').fsPath;
+        const tracerPath = vscode.Uri.joinPath(this.extensionUri, 'dist', 'adapters', 'javascript', 'tracer.js').fsPath;
         
         // Spawn node with the tracer script
         this.process = spawn('node', [tracerPath, filePath]);

@@ -3,7 +3,6 @@ import { spawn, ChildProcess } from 'child_process';
 import * as path from 'path';
 import { ITracerAdapter, ExecutionEvent } from '../Adapter';
 import * as vscode from 'vscode';
-import * as fs from 'fs';
 
 export class PythonAdapter extends EventEmitter implements ITracerAdapter {
     private process: ChildProcess | undefined;
@@ -13,16 +12,7 @@ export class PythonAdapter extends EventEmitter implements ITracerAdapter {
     }
 
     public start(filePath: string): void {
-        // Find the tracer.py script
-        const tracerPath = vscode.Uri.joinPath(this.extensionUri, 'src', 'adapters', 'python', 'tracer.py').fsPath;
-        
-        if (!fs.existsSync(tracerPath)) {
-            // Need to handle dist paths for the extension runtime
-            // In a compiled extension, src might not be available directly if we only package dist
-            // But for development, it works. Let's make it robust by trying to find it in the extension root
-            // Note: Since we are not compiling tracer.py using webpack, we must ensure it's copied or read correctly.
-            // For MVP, assuming it's available in the workspace.
-        }
+        const tracerPath = vscode.Uri.joinPath(this.extensionUri, 'dist', 'adapters', 'python', 'tracer.py').fsPath;
 
         // We use 'python' assuming it's in the PATH, or we could use the active Python extension's interpreter
         this.process = spawn('python', [tracerPath, filePath]);

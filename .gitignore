@@ -1,0 +1,11 @@
+node_modules/
+*.vsix
+*.log
+
+# Editor / OS
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?

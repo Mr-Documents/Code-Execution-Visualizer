@@ -30,8 +30,8 @@ A futuristic holographic cyberpunk code execution visualization dashboard for Vi
 - **Variable Inspector**: Detailed view of all variables in current scope with types and values
 
 ### Multi-Language Support
-- **Python**: Full support using Python's built-in `sys.settrace` for precise execution tracking
-- **JavaScript**: Complete support using Node.js V8 Debugger Protocol for accurate step-through
+- **JavaScript**: Full support using the Node.js V8 Debugger Protocol for accurate step-through, including nested function calls, runtime exceptions, and infinite-loop protection
+- **Python**: Experimental support using Python's built-in `sys.settrace` — not yet covered by the same hardening as the JavaScript path
 
 ### Cyberpunk UI Design
 - **Glass Morphism Panels**: Modern frosted glass aesthetic with blur effects
@@ -52,7 +52,7 @@ A futuristic holographic cyberpunk code execution visualization dashboard for Vi
 
 1. **Clone the repository**
    ```bash
-   git clone <repository-url>
+   git clone https://github.com/YOUR_GITHUB_USERNAME/code-execution-visualizer.git
    cd "code Execution Visualizer"
    ```
 
@@ -231,13 +231,13 @@ To test the visualizer:
 
 ## 🔮 Future Enhancements
 
+- [ ] Harden and fully support Python (currently experimental)
 - [ ] Support for additional languages (TypeScript, Java, C++)
-- [ ] Console output panel integration
-- [ ] Adjustable execution speed controls
+- [ ] Breakpoints and step into/over/out controls
 - [ ] Export execution traces to JSON
-- [ ] Breakpoint integration with VS Code debugger
 - [ ] Performance profiling mode
 - [ ] Custom theme support
+- [ ] Configurable step limit (currently a fixed 5000-step cap)
 
 ---
 
@@ -263,16 +263,6 @@ Contributions are welcome! Please feel free to submit pull requests or open issu
 - Framer Motion 12.42.2
 - Lucide React 1.25.0
 
----
 
-## 📝 License
 
-This project is provided as-is for educational and development purposes.
 
----
-
-<div align="center">
-
-Built with ❤️ for the developer community
-
-</div>

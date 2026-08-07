@@ -9,9 +9,12 @@
   --neon-cyan: #00f3ff;
   --neon-purple: #b500ff;
   --neon-pink: #ff007f;
-  
+  --neon-green: #39ff14;
+  --neon-orange: #ff8800;
+
   --glow-cyan: 0 0 10px rgba(0, 243, 255, 0.5), 0 0 20px rgba(0, 243, 255, 0.3);
   --glow-purple: 0 0 10px rgba(181, 0, 255, 0.5), 0 0 20px rgba(181, 0, 255, 0.3);
+  --glow-orange: 0 0 10px rgba(255, 136, 0, 0.5), 0 0 20px rgba(255, 136, 0, 0.3);
   
   --grid-pattern: linear-gradient(rgba(0, 243, 255, 0.05) 1px, transparent 1px),
                   linear-gradient(90deg, rgba(0, 243, 255, 0.05) 1px, transparent 1px);
@@ -29,9 +32,12 @@
     --neon-cyan: #00a2ff;
     --neon-purple: #8b00ff;
     --neon-pink: #d9006b;
-    
+    --neon-green: #1fa62a;
+    --neon-orange: #cc6d00;
+
     --glow-cyan: 0 0 10px rgba(0, 162, 255, 0.4), 0 0 20px rgba(0, 162, 255, 0.2);
     --glow-purple: 0 0 10px rgba(139, 0, 255, 0.4), 0 0 20px rgba(139, 0, 255, 0.2);
+    --glow-orange: 0 0 10px rgba(204, 109, 0, 0.4), 0 0 20px rgba(204, 109, 0, 0.2);
     
     --grid-pattern: linear-gradient(rgba(0, 162, 255, 0.08) 1px, transparent 1px),
                     linear-gradient(90deg, rgba(0, 162, 255, 0.08) 1px, transparent 1px);

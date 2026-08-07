@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
+import * as fs from 'fs';
 import { ITracerAdapter } from '../adapters/Adapter';
 import { PythonAdapter } from '../adapters/python/PythonAdapter';
 import { JavascriptAdapter } from '../adapters/javascript/JavascriptAdapter';
@@ -36,27 +37,32 @@ export class ExecutionManager {
 
     this.stopCurrentAdapter();
     this.executionEvents = [];
-    
-    // Send an initial empty state or loading state if we want
 
     const ext = path.extname(filePath).toLowerCase();
-    
-    if (ext === '.py') {
-      this.currentAdapter = new PythonAdapter(this.extensionUri);
-    } else if (ext === '.js') {
-      this.currentAdapter = new JavascriptAdapter(this.extensionUri);
-    } else {
+
+    if (ext !== '.py' && ext !== '.js') {
+      this.panel?.webview.postMessage({ command: 'UNSUPPORTED_FILE', payload: { ext } });
       vscode.window.showErrorMessage(`Unsupported file type: ${ext}`);
       return;
     }
 
+    const codeContent = fs.readFileSync(filePath, 'utf8');
+    const language = ext === '.py' ? 'python' : 'javascript';
+
+    // Let the webview show a loading state while the tracer spins up
+    this.panel?.webview.postMessage({
+      command: 'EXECUTION_START',
+      payload: { code: codeContent, fileName: path.basename(filePath), language }
+    });
+
+    this.currentAdapter = ext === '.py'
+      ? new PythonAdapter(this.extensionUri)
+      : new JavascriptAdapter(this.extensionUri);
+
     this.currentAdapter.on('event', (event) => {
       this.executionEvents.push(event);
-      // We can stream events as they come, or send them all at once.
-      // The UI expects a list of events to step through.
-      // For now, let's stream the accumulated list so the UI can update its timeline.
       if (this.panel) {
-        this.panel.webview.postMessage({ command: 'EXECUTION_EVENTS', payload: this.executionEvents });
+        this.panel.webview.postMessage({ command: 'EXECUTION_EVENT', payload: { event } });
       }
     });
 

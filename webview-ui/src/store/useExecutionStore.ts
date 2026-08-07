@@ -2,11 +2,13 @@ import { create } from 'zustand';
 
 // Types for the MVP execution events
 export interface ExecutionEvent {
-  type: 'STEP' | 'EXCEPTION' | 'CALL' | 'RETURN';
+  type: 'STEP' | 'EXCEPTION' | 'CALL' | 'RETURN' | 'ERROR' | 'END' | 'LIMIT';
   line: number;
   scope: Record<string, VariableValue>;
   callStack?: string[];
   heap?: Record<string, any>;
+  stdout?: string;
+  error?: string;
 }
 
 export interface VariableValue {
@@ -15,14 +17,23 @@ export interface VariableValue {
   ref?: string; // ID of object in heap
 }
 
+export type ExecutionPhase = 'idle' | 'loading' | 'ready' | 'unsupported';
+
 interface ExecutionState {
   events: ExecutionEvent[];
   currentStep: number;
   isPlaying: boolean;
   playbackSpeed: number;
-  
+  code: string;
+  fileName: string;
+  language: string;
+  phase: ExecutionPhase;
+  unsupportedExt?: string;
+
   // Actions
-  setEvents: (events: ExecutionEvent[]) => void;
+  startExecution: (data: { code: string; fileName: string; language: string }) => void;
+  appendEvent: (event: ExecutionEvent) => void;
+  markUnsupported: (ext: string) => void;
   nextStep: () => void;
   prevStep: () => void;
   jumpToStep: (step: number) => void;
@@ -34,10 +45,31 @@ export const useExecutionStore = create<ExecutionState>((set, get) => ({
   events: [],
   currentStep: 0,
   isPlaying: false,
-  playbackSpeed: 1000,
+  playbackSpeed: 800, // default Speed (Medium)
+  code: '',
+  fileName: '',
+  language: '',
+  phase: 'idle',
+  unsupportedExt: undefined,
 
-  setEvents: (events) => set({ events, currentStep: 0, isPlaying: false }),
-  
+  startExecution: (data) => set({
+    events: [],
+    code: data.code,
+    fileName: data.fileName,
+    language: data.language,
+    currentStep: 0,
+    isPlaying: false,
+    phase: 'loading',
+    unsupportedExt: undefined
+  }),
+
+  appendEvent: (event) => set((state) => ({
+    events: [...state.events, event],
+    phase: 'ready'
+  })),
+
+  markUnsupported: (ext) => set({ phase: 'unsupported', unsupportedExt: ext, events: [] }),
+
   nextStep: () => {
     const { currentStep, events } = get();
     if (currentStep < events.length - 1) {

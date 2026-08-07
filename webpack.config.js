@@ -1,4 +1,5 @@
 const path = require('path');
+const CopyPlugin = require('copy-webpack-plugin');
 
 module.exports = {
   mode: 'none',
@@ -29,5 +30,16 @@ module.exports = {
   },
   externals: {
     vscode: 'commonjs vscode'
-  }
+  },
+  plugins: [
+    // The tracer scripts are spawned as separate processes at runtime (not
+    // bundled by webpack), so they must be copied alongside extension.js —
+    // dist/ is the single source of truth for what ships in the package.
+    new CopyPlugin({
+      patterns: [
+        { from: 'src/adapters/javascript/tracer.js', to: 'adapters/javascript/tracer.js' },
+        { from: 'src/adapters/python/tracer.py', to: 'adapters/python/tracer.py' }
+      ]
+    })
+  ]
 };
