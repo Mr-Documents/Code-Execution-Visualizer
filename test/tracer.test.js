@@ -110,7 +110,51 @@ test('infinite loop: halts at the step cap', async () => {
 
     const limit = events[events.length - 1];
     assert.equal(limit.type, 'LIMIT');
+    assert.equal(limit.limitReason, 'steps');
     assert.equal(limit.stepLimit, STEP_LIMIT, 'LIMIT should report the cap it hit');
+});
+
+test('enclosing variables stay visible inside a loop body', async () => {
+    // Regression: only the innermost scope was read, so stepping through a loop
+    // showed the loop counter and hid the data and accumulator being changed.
+    const { events } = await trace(fixture('loop-scope.js'));
+
+    const inLoop = events.filter((e) => e.scope && e.scope.i);
+    assert.ok(inLoop.length > 0, 'expected steps inside the loop body');
+
+    for (const event of inLoop) {
+        const names = Object.keys(event.scope);
+        assert.ok(names.includes('items'), `enclosing 'items' missing, saw ${names}`);
+        assert.ok(names.includes('total'), `enclosing 'total' missing, saw ${names}`);
+    }
+
+    // The accumulator should visibly change across the loop.
+    const totals = inLoop.map((e) => e.scope.total.value);
+    assert.ok(new Set(totals).size > 1, `expected 'total' to change, saw ${totals}`);
+});
+
+test('trace size is bounded independently of the step cap', async () => {
+    // A large structure held in scope is re-serialized every step, so step count
+    // alone does not bound memory. The byte budget is the backstop.
+    const BYTE_LIMIT = 200 * 1024;
+    const { events, exitCode } = await trace(fixture('heavy-loop.js'), {
+        env: { CEV_MAX_TRACE_BYTES: String(BYTE_LIMIT), CEV_MAX_STEPS: '100000' },
+        timeoutMs: 60000
+    });
+
+    assert.equal(exitCode, 0);
+    const limit = events[events.length - 1];
+    assert.equal(limit.type, 'LIMIT');
+    assert.equal(limit.limitReason, 'size');
+    assert.ok(limit.traceBytes >= BYTE_LIMIT);
+    assert.equal(limit.traceByteLimit, BYTE_LIMIT);
+
+    // Overshoot is bounded by one event, not unbounded.
+    const totalBytes = events.reduce((sum, e) => sum + JSON.stringify(e).length, 0);
+    assert.ok(
+        totalBytes < BYTE_LIMIT * 3,
+        `emitted ${totalBytes} bytes against a ${BYTE_LIMIT} cap`
+    );
 });
 
 test('empty file: ends cleanly with no errors', async () => {

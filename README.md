@@ -196,6 +196,7 @@ Both tracers honour two environment variables:
 |---|---|---|
 | `CEV_TRACER_DEBUG` | off | Log the V8 Inspector protocol exchange to stderr. Off by default because it easily exceeds the size of the trace itself. |
 | `CEV_MAX_STEPS` | `5000` | Override the infinite-loop step cap. The JavaScript tracer costs one debugger round trip per step, so the test suite lowers this to keep runs fast. |
+| `CEV_MAX_TRACE_BYTES` | `33554432` (32 MB) | Override the total trace size cap. Steps alone don't bound memory — a program holding a large structure re-serializes it on every step — so this is what actually protects the UI. |
 
 ```bash
 CEV_TRACER_DEBUG=1 node src/adapters/javascript/tracer.js path/to/script.js

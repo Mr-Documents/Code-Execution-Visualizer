@@ -30,8 +30,13 @@ export interface ExecutionEvent {
   /** Console output since the previous event, not the running total. */
   stdoutDelta?: string;
   error?: string;
-  /** On a LIMIT event, the step cap that was reached. */
+  /** On a LIMIT event, which safeguard stopped the run. */
+  limitReason?: 'steps' | 'size';
+  /** On a step-capped LIMIT event, the cap that was reached. */
   stepLimit?: number;
+  /** On a size-capped LIMIT event, the bytes emitted and the cap. */
+  traceBytes?: number;
+  traceByteLimit?: number;
 }
 
 export type ExecutionPhase = 'idle' | 'loading' | 'ready' | 'unsupported' | 'failed';

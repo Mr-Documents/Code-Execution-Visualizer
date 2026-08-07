@@ -14,6 +14,12 @@ const SPEEDS = [
   { label: 'Inst', value: 100 }
 ];
 
+/** Renders a byte count as whole megabytes for user-facing messages. */
+function formatMegabytes(bytes: number | undefined): string {
+  if (!bytes) return 'the size limit';
+  return `${Math.round(bytes / (1024 * 1024))} MB`;
+}
+
 interface CodeLineProps {
   lineNumber: number;
   text: string;
@@ -261,8 +267,10 @@ function App() {
             <h2 className="error-title"><AlertTriangle size={16} /> Execution Stopped</h2>
             <div className="error-content">
               <p className="error-message">
-                Possible infinite loop detected — execution halted after{' '}
-                {(currentEvent.stepLimit ?? 5000).toLocaleString()} steps.
+                {currentEvent.limitReason === 'size'
+                  ? `This trace grew past ${formatMegabytes(currentEvent.traceByteLimit)} and was stopped to keep VS Code responsive. ` +
+                    'Try visualizing a smaller portion of the program.'
+                  : `Possible infinite loop detected — execution halted after ${(currentEvent.stepLimit ?? 5000).toLocaleString()} steps.`}
               </p>
               <span className="error-meta">Halted on Line {currentEvent.line}</span>
             </div>

@@ -23,6 +23,12 @@ def _positive_int_from_env(name, fallback):
 # Halt runaway programs. Also bounds worst-case trace size.
 # Overridable via CEV_MAX_STEPS so tests can exercise the cap cheaply.
 MAX_STEPS = _positive_int_from_env('CEV_MAX_STEPS', 5000)
+
+# Cap on total emitted trace bytes. The step cap alone doesn't bound memory:
+# every step re-serializes the heap reachable from scope, so a long run holding
+# a large structure can produce hundreds of MB, all of which the UI retains to
+# keep the timeline scrubbable.
+MAX_TRACE_BYTES = _positive_int_from_env('CEV_MAX_TRACE_BYTES', 32 * 1024 * 1024)
 # Per-step caps on object-graph traversal. Each step re-walks reachable objects,
 # so an unbounded walk over a large or deeply nested structure dominates cost
 # (and can exceed the recursion limit).
@@ -67,6 +73,9 @@ sys.stdout = stdout_interceptor
 # in step count. Consumers rebuild the console by concatenating deltas.
 _stdout_sent = 0
 
+# Running total of emitted payload, enforced against MAX_TRACE_BYTES.
+_bytes_emitted = 0
+
 
 def take_stdout_delta():
     global _stdout_sent
@@ -77,6 +86,7 @@ def take_stdout_delta():
 
 
 def emit(event_type, line, scope, heap, call_stack, **extra):
+    global _bytes_emitted
     event = {
         'type': event_type,
         'line': line,
@@ -86,7 +96,9 @@ def emit(event_type, line, scope, heap, call_stack, **extra):
         'stdoutDelta': take_stdout_delta(),
     }
     event.update(extra)
-    original_stdout.write(json.dumps(event) + '\n')
+    payload = json.dumps(event)
+    _bytes_emitted += len(payload) + 1
+    original_stdout.write(payload + '\n')
     original_stdout.flush()
 
 
@@ -201,10 +213,20 @@ def main():
 
         step_count['count'] += 1
         if step_count['count'] > MAX_STEPS:
-            emit('LIMIT', frame.f_lineno, scope, heap, call_stack, stepLimit=MAX_STEPS)
+            emit('LIMIT', frame.f_lineno, scope, heap, call_stack,
+                 limitReason='steps', stepLimit=MAX_STEPS)
             raise StepLimitReached()
 
         emit('STEP', frame.f_lineno, scope, heap, call_stack)
+
+        # Checked after emitting so the step that crossed the line is still
+        # shown, and the LIMIT event explains why the trace stops there.
+        if _bytes_emitted > MAX_TRACE_BYTES:
+            emit('LIMIT', frame.f_lineno, {}, {}, call_stack,
+                 limitReason='size', traceBytes=_bytes_emitted,
+                 traceByteLimit=MAX_TRACE_BYTES)
+            raise StepLimitReached()
+
         return trace_calls
 
     target_globals = {'__name__': '__main__', '__file__': target_file}

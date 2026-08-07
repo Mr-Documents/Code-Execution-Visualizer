@@ -33,6 +33,16 @@ function positiveIntFromEnv(name, fallback) {
  * tests exercise the cap with a small value instead of paying for 5000 of them.
  */
 const MAX_STEPS = positiveIntFromEnv('CEV_MAX_STEPS', 5000);
+
+/**
+ * Cap on total emitted trace bytes.
+ *
+ * The step cap alone doesn't bound memory: every step re-serializes the heap
+ * reachable from scope, so a program holding a large structure across a long
+ * run can produce hundreds of MB — all of which the webview retains so the
+ * timeline stays scrubbable. This bounds what the UI is ever asked to hold.
+ */
+const MAX_TRACE_BYTES = positiveIntFromEnv('CEV_MAX_TRACE_BYTES', 32 * 1024 * 1024);
 /** Per-step caps on object-graph traversal. Each step re-walks reachable
  *  objects from scratch (V8 re-issues object ids on every pause, so results
  *  can't be cached), which makes an unbounded walk the dominant cost. */
@@ -57,6 +67,7 @@ let stdoutSent = 0;
 let stderrBuffer = '';
 let wsClient = null;
 let stepCount = 0;
+let bytesEmitted = 0;
 /** Set once a terminal event (ERROR/LIMIT) has been emitted, so the exit and
  *  context-destroyed handlers don't append a contradictory END after it. */
 let finished = false;
@@ -132,7 +143,9 @@ function sendEvent(type, line, scope, heap, callStack, extra = {}) {
         stdoutDelta: delta,
         ...extra
     };
-    process.stdout.write(JSON.stringify(event) + '\n');
+    const payload = JSON.stringify(event);
+    bytesEmitted += payload.length + 1;
+    process.stdout.write(payload + '\n');
 }
 
 /** Renders a non-object remote value as a display string. */
@@ -324,38 +337,56 @@ function connectDebugWS(url) {
         'exports', 'require', 'module', '__filename', '__dirname'
     ]);
 
-    /** Captures the visible scope and reachable heap for a paused frame. */
+    /**
+     * Scope kinds worth showing. `global` is excluded deliberately: it holds
+     * every Node built-in and would bury the user's own variables.
+     */
+    const VISIBLE_SCOPE_TYPES = new Set(['local', 'block', 'closure', 'catch', 'script']);
+
+    /**
+     * Captures everything visible from a paused frame, plus the reachable heap.
+     *
+     * The whole scope chain is merged rather than just the innermost entry:
+     * inside a loop body the innermost scope holds only the loop variable, so
+     * reading one scope hid the enclosing function's variables — exactly the
+     * accumulators someone stepping through a loop wants to watch. The chain is
+     * ordered innermost-first, so the first binding of a name wins and inner
+     * declarations correctly shadow outer ones.
+     */
     async function captureState(frame) {
         const ctx = { heap: {}, seen: new Set(), count: 0 };
         const scope = {};
-
-        const localScope = frame.scopeChain.find((s) => s.type === 'local' || s.type === 'block');
-        if (!localScope || !localScope.object.objectId) return { scope, heap: ctx.heap };
-
-        let result;
-        try {
-            result = await sendCommand('Runtime.getProperties', {
-                objectId: localScope.object.objectId,
-                ownProperties: true
-            });
-        } catch {
-            return { scope, heap: ctx.heap };
-        }
-
         const pending = [];
-        for (const prop of result.result || []) {
-            if (!prop.name || MODULE_WRAPPER_NAMES.has(prop.name) || !prop.value) continue;
 
-            const type = describeType(prop.value);
-            if (prop.value.objectId) {
-                scope[prop.name] = { type, value: prop.value.type, ref: prop.value.objectId };
-                pending.push(processObject(prop.value.objectId, type, ctx));
-            } else {
-                scope[prop.name] = { type, value: safeValue(prop.value) };
+        for (const scopeEntry of frame.scopeChain) {
+            if (!VISIBLE_SCOPE_TYPES.has(scopeEntry.type)) continue;
+            const objectId = scopeEntry.object && scopeEntry.object.objectId;
+            if (!objectId) continue;
+
+            let result;
+            try {
+                result = await sendCommand('Runtime.getProperties', { objectId, ownProperties: true });
+            } catch {
+                continue;
+            }
+
+            for (const prop of result.result || []) {
+                if (!prop.name || !prop.value) continue;
+                if (MODULE_WRAPPER_NAMES.has(prop.name)) continue;
+                // Innermost scope wins; don't let an outer binding overwrite it.
+                if (Object.prototype.hasOwnProperty.call(scope, prop.name)) continue;
+
+                const type = describeType(prop.value);
+                if (prop.value.objectId) {
+                    scope[prop.name] = { type, value: prop.value.type, ref: prop.value.objectId };
+                    pending.push(processObject(prop.value.objectId, type, ctx));
+                } else {
+                    scope[prop.name] = { type, value: safeValue(prop.value) };
+                }
             }
         }
-        await Promise.all(pending);
 
+        await Promise.all(pending);
         return { scope, heap: ctx.heap };
     }
 
@@ -400,11 +431,26 @@ function connectDebugWS(url) {
         const { scope, heap } = await captureState(frame);
 
         if (++stepCount > MAX_STEPS) {
-            terminate('LIMIT', line, scope, heap, callStack, { stepLimit: MAX_STEPS });
+            terminate('LIMIT', line, scope, heap, callStack, {
+                limitReason: 'steps',
+                stepLimit: MAX_STEPS
+            });
             return;
         }
 
         sendEvent('STEP', line, scope, heap, callStack);
+
+        // Checked after emitting so the step that crossed the line is still
+        // shown, and the LIMIT event explains why the trace stops there.
+        if (bytesEmitted > MAX_TRACE_BYTES) {
+            terminate('LIMIT', line, {}, {}, callStack, {
+                limitReason: 'size',
+                traceBytes: bytesEmitted,
+                traceByteLimit: MAX_TRACE_BYTES
+            });
+            return;
+        }
+
         sendCommand('Debugger.stepInto').catch(() => {});
     }
 

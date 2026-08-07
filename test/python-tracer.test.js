@@ -57,7 +57,21 @@ test('infinite loop: halts at the step cap', async () => {
 
     const limit = events[events.length - 1];
     assert.equal(limit.type, 'LIMIT');
+    assert.equal(limit.limitReason, 'steps');
     assert.equal(limit.stepLimit, STEP_LIMIT, 'LIMIT should report the cap it hit');
+});
+
+test('trace size is bounded independently of the step cap', async () => {
+    const BYTE_LIMIT = 100 * 1024;
+    const { events, exitCode } = await trace(fixture('infinite-loop.py'), {
+        env: { CEV_MAX_TRACE_BYTES: String(BYTE_LIMIT), CEV_MAX_STEPS: '100000' }
+    });
+
+    assert.equal(exitCode, 0);
+    const limit = events[events.length - 1];
+    assert.equal(limit.type, 'LIMIT');
+    assert.equal(limit.limitReason, 'size');
+    assert.equal(limit.traceByteLimit, BYTE_LIMIT);
 });
 
 test('every heap reference resolves to a heap entry', async () => {
