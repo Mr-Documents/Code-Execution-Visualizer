@@ -94,12 +94,23 @@ test('throwing script: reports ERROR with the failing line and message', async (
     assert.equal(events[events.length - 1].type, 'ERROR');
 });
 
-test('infinite loop: halts at the step cap', { timeout: 40000 }, async () => {
-    const { events, exitCode } = await trace(fixture('infinite-loop.js'), { timeoutMs: 35000 });
+test('infinite loop: halts at the step cap', async () => {
+    // Each step costs an inspector round trip, so the cap is lowered here — the
+    // mechanism is what's under test, not the production value of 5000.
+    const STEP_LIMIT = 50;
+    const { events, exitCode } = await trace(fixture('infinite-loop.js'), {
+        env: { CEV_MAX_STEPS: String(STEP_LIMIT) },
+        timeoutMs: 30000
+    });
 
     assert.equal(exitCode, 0);
-    assert.ok(events.length <= 5001, `expected <= 5001 events, got ${events.length}`);
-    assert.equal(events[events.length - 1].type, 'LIMIT');
+    // The run is unbounded, so it stops exactly at the cap: N steps + 1 LIMIT.
+    assert.equal(events.length, STEP_LIMIT + 1);
+    assert.equal(events.filter((e) => e.type === 'STEP').length, STEP_LIMIT);
+
+    const limit = events[events.length - 1];
+    assert.equal(limit.type, 'LIMIT');
+    assert.equal(limit.stepLimit, STEP_LIMIT, 'LIMIT should report the cap it hit');
 });
 
 test('empty file: ends cleanly with no errors', async () => {

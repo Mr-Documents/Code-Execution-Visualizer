@@ -18,8 +18,21 @@ const { pathToFileURL, fileURLToPath } = require('url');
 // volume, and the extension pipes our stderr into the host's output channel.
 const DEBUG = !!process.env.CEV_TRACER_DEBUG;
 
-/** Halt runaway programs. Also bounds worst-case trace size. */
-const MAX_STEPS = 5000;
+/** Reads a positive integer from the environment, falling back if unset/invalid. */
+function positiveIntFromEnv(name, fallback) {
+    const raw = process.env[name];
+    if (!raw) return fallback;
+    const parsed = Number.parseInt(raw, 10);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+/**
+ * Halt runaway programs. Also bounds worst-case trace size.
+ *
+ * Overridable via `CEV_MAX_STEPS`: each step costs one inspector round trip, so
+ * tests exercise the cap with a small value instead of paying for 5000 of them.
+ */
+const MAX_STEPS = positiveIntFromEnv('CEV_MAX_STEPS', 5000);
 /** Per-step caps on object-graph traversal. Each step re-walks reachable
  *  objects from scratch (V8 re-issues object ids on every pause, so results
  *  can't be cached), which makes an unbounded walk the dominant cost. */
@@ -106,7 +119,7 @@ child.stderr.on('data', (data) => {
  * Sending the full cumulative buffer each time made total output quadratic in
  * step count; consumers rebuild the running console by concatenating deltas.
  */
-function sendEvent(type, line, scope, heap, callStack, error = undefined) {
+function sendEvent(type, line, scope, heap, callStack, extra = {}) {
     const delta = stdoutBuffer.slice(stdoutSent);
     stdoutSent = stdoutBuffer.length;
 
@@ -117,7 +130,7 @@ function sendEvent(type, line, scope, heap, callStack, error = undefined) {
         heap,
         callStack,
         stdoutDelta: delta,
-        ...(error ? { error } : {})
+        ...extra
     };
     process.stdout.write(JSON.stringify(event) + '\n');
 }
@@ -347,10 +360,10 @@ function connectDebugWS(url) {
     }
 
     /** Emits a terminal event and tears down the run. */
-    function terminate(type, line, scope, heap, callStack, error) {
+    function terminate(type, line, scope, heap, callStack, extra) {
         if (finished) return;
         finished = true;
-        sendEvent(type, line, scope, heap, callStack, error);
+        sendEvent(type, line, scope, heap, callStack, extra);
         close();
         child.kill();
     }
@@ -369,7 +382,7 @@ function connectDebugWS(url) {
             const message = data.description
                 ? String(data.description).split('\n')[0]
                 : data.className || 'Uncaught exception';
-            terminate('ERROR', line, {}, {}, targetCallStack(callFrames), message);
+            terminate('ERROR', line, {}, {}, targetCallStack(callFrames), { error: message });
             return;
         }
 
@@ -387,7 +400,7 @@ function connectDebugWS(url) {
         const { scope, heap } = await captureState(frame);
 
         if (++stepCount > MAX_STEPS) {
-            terminate('LIMIT', line, scope, heap, callStack);
+            terminate('LIMIT', line, scope, heap, callStack, { stepLimit: MAX_STEPS });
             return;
         }
 
@@ -564,7 +577,7 @@ child.on('exit', (code) => {
 child.on('error', (err) => {
     if (!finished) {
         finished = true;
-        sendEvent('ERROR', -1, {}, {}, [], `Failed to run node: ${err.message}`);
+        sendEvent('ERROR', -1, {}, {}, [], { error: `Failed to run node: ${err.message}` });
     }
     if (wsClient) wsClient.close();
     process.exit(1);

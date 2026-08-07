@@ -5,9 +5,11 @@ const { spawn, spawnSync } = require('child_process');
  * newline-delimited JSON event it prints to stdout, and resolves once the
  * process exits. Rejects if it doesn't exit within `timeoutMs`.
  */
-function runTracer(command, args, { timeoutMs = 20000 } = {}) {
+function runTracer(command, args, { timeoutMs = 20000, env } = {}) {
     return new Promise((resolve, reject) => {
-        const child = spawn(command, args);
+        const child = spawn(command, args, {
+            env: env ? { ...process.env, ...env } : process.env
+        });
         let stdout = '';
         let stderr = '';
 

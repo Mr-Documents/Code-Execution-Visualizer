@@ -55,4 +55,6 @@ export interface ExecutionEvent {
      */
     stdoutDelta?: string;
     error?: string;
+    /** On a LIMIT event, the step cap that was reached. */
+    stepLimit?: number;
 }

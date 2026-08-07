@@ -30,6 +30,8 @@ export interface ExecutionEvent {
   /** Console output since the previous event, not the running total. */
   stdoutDelta?: string;
   error?: string;
+  /** On a LIMIT event, the step cap that was reached. */
+  stepLimit?: number;
 }
 
 export type ExecutionPhase = 'idle' | 'loading' | 'ready' | 'unsupported' | 'failed';

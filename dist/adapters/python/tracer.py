@@ -10,8 +10,19 @@ import json
 import io
 import os
 
+
+def _positive_int_from_env(name, fallback):
+    """Reads a positive integer from the environment, falling back if unset/invalid."""
+    try:
+        parsed = int(os.environ.get(name, ''))
+    except ValueError:
+        return fallback
+    return parsed if parsed > 0 else fallback
+
+
 # Halt runaway programs. Also bounds worst-case trace size.
-MAX_STEPS = 5000
+# Overridable via CEV_MAX_STEPS so tests can exercise the cap cheaply.
+MAX_STEPS = _positive_int_from_env('CEV_MAX_STEPS', 5000)
 # Per-step caps on object-graph traversal. Each step re-walks reachable objects,
 # so an unbounded walk over a large or deeply nested structure dominates cost
 # (and can exceed the recursion limit).
@@ -65,7 +76,7 @@ def take_stdout_delta():
     return delta
 
 
-def emit(event_type, line, scope, heap, call_stack, error=None):
+def emit(event_type, line, scope, heap, call_stack, **extra):
     event = {
         'type': event_type,
         'line': line,
@@ -74,8 +85,7 @@ def emit(event_type, line, scope, heap, call_stack, error=None):
         'callStack': call_stack,
         'stdoutDelta': take_stdout_delta(),
     }
-    if error is not None:
-        event['error'] = error
+    event.update(extra)
     original_stdout.write(json.dumps(event) + '\n')
     original_stdout.flush()
 
@@ -191,7 +201,7 @@ def main():
 
         step_count['count'] += 1
         if step_count['count'] > MAX_STEPS:
-            emit('LIMIT', frame.f_lineno, scope, heap, call_stack)
+            emit('LIMIT', frame.f_lineno, scope, heap, call_stack, stepLimit=MAX_STEPS)
             raise StepLimitReached()
 
         emit('STEP', frame.f_lineno, scope, heap, call_stack)
@@ -219,7 +229,7 @@ def main():
                 line_num = tb.tb_lineno
             tb = tb.tb_next
 
-        emit('ERROR', line_num, {}, {}, [], '{}: {}'.format(type(exc).__name__, exc))
+        emit('ERROR', line_num, {}, {}, [], error='{}: {}'.format(type(exc).__name__, exc))
     finally:
         sys.settrace(None)
         sys.stdout = original_stdout

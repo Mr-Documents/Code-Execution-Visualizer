@@ -46,12 +46,18 @@ test('raising script: reports ERROR with the failing line', async () => {
     assert.equal(events[events.length - 1].type, 'ERROR');
 });
 
-test('infinite loop: halts at the step cap', { timeout: 60000 }, async () => {
-    const { events, exitCode } = await trace(fixture('infinite-loop.py'), { timeoutMs: 45000 });
+test('infinite loop: halts at the step cap', async () => {
+    const STEP_LIMIT = 50;
+    const { events, exitCode } = await trace(fixture('infinite-loop.py'), {
+        env: { CEV_MAX_STEPS: String(STEP_LIMIT) }
+    });
 
     assert.equal(exitCode, 0);
-    assert.ok(events.length <= 5001, `expected <= 5001 events, got ${events.length}`);
-    assert.equal(events[events.length - 1].type, 'LIMIT');
+    assert.equal(events.length, STEP_LIMIT + 1);
+
+    const limit = events[events.length - 1];
+    assert.equal(limit.type, 'LIMIT');
+    assert.equal(limit.stepLimit, STEP_LIMIT, 'LIMIT should report the cap it hit');
 });
 
 test('every heap reference resolves to a heap entry', async () => {

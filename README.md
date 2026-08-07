@@ -190,11 +190,16 @@ npm run compile
 
 ### Debugging the tracers
 
-The tracers are silent by default — verbose V8 Inspector protocol logging easily
-exceeds the size of the actual trace. Set `CEV_TRACER_DEBUG=1` to turn it on:
+Both tracers honour two environment variables:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `CEV_TRACER_DEBUG` | off | Log the V8 Inspector protocol exchange to stderr. Off by default because it easily exceeds the size of the trace itself. |
+| `CEV_MAX_STEPS` | `5000` | Override the infinite-loop step cap. The JavaScript tracer costs one debugger round trip per step, so the test suite lowers this to keep runs fast. |
 
 ```bash
 CEV_TRACER_DEBUG=1 node src/adapters/javascript/tracer.js path/to/script.js
+CEV_MAX_STEPS=100 node src/adapters/javascript/tracer.js path/to/script.js
 ```
 
 ---

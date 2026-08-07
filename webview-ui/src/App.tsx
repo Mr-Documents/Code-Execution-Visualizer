@@ -260,7 +260,10 @@ function App() {
           <div className="glass-panel panel error-visualization limit-visualization">
             <h2 className="error-title"><AlertTriangle size={16} /> Execution Stopped</h2>
             <div className="error-content">
-              <p className="error-message">Possible infinite loop detected — execution halted after 5000 steps.</p>
+              <p className="error-message">
+                Possible infinite loop detected — execution halted after{' '}
+                {(currentEvent.stepLimit ?? 5000).toLocaleString()} steps.
+              </p>
               <span className="error-meta">Halted on Line {currentEvent.line}</span>
             </div>
           </div>
