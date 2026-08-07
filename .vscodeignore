@@ -8,12 +8,14 @@ webview-ui/tsconfig*.json
 webview-ui/.oxlintrc.json
 webview-ui/README.md
 node_modules/**
+test/**
 test.js
 test.py
 task.md
 walkthrough.md
 .vscode/**
 .vscode-test/**
+.github/**
 tsconfig.json
 webpack.config.js
 .gitignore

@@ -217,7 +217,21 @@ Intuitive playback interface:
 
 ## 🧪 Testing
 
-Example test files are included:
+### Automated
+
+CI (`.github/workflows/ci.yml`) runs on every push/PR against Ubuntu and
+Windows: type-checks and builds both the extension and the webview, then runs:
+
+```bash
+npm run test:tracer   # spawns the tracers against fixtures in test/ and
+                       # asserts on the emitted event stream (normal run,
+                       # thrown exception, infinite-loop step cap, empty file)
+npm run test:webview  # vitest unit tests for the execution store
+```
+
+### Manual
+
+Example scripts are included for manually exercising the dashboard UI:
 
 - **test.py**: Python test script with function calls and variable assignments
 - **test.js**: JavaScript test script with similar functionality
