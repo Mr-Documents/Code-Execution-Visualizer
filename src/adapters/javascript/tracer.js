@@ -430,7 +430,11 @@ function connectDebugWS(url) {
             const message = data.description
                 ? String(data.description).split('\n')[0]
                 : data.className || 'Uncaught exception';
-            terminate('ERROR', line, {}, {}, targetCallStack(callFrames), { error: message });
+            // Capture state at the point of failure: the variables that caused
+            // a crash are the most useful thing to inspect, and the frames are
+            // still live here — once we resume, they're gone for good.
+            const { scope, heap } = await captureState(callFrames);
+            terminate('ERROR', line, scope, heap, targetCallStack(callFrames), { error: message });
             return;
         }
 

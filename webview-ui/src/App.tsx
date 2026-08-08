@@ -1,5 +1,5 @@
 import { memo, useEffect, useMemo, useRef } from 'react';
-import { useExecutionStore } from './store/useExecutionStore';
+import { useExecutionStore, selectStateEvent } from './store/useExecutionStore';
 import './theme.css';
 import './App.css';
 import { Play, Pause, SkipBack, SkipForward, RotateCcw, Terminal, AlertTriangle, Layers } from 'lucide-react';
@@ -102,6 +102,9 @@ function App() {
   const currentEvent = events[currentStep];
   const previousEvent = currentStep > 0 ? events[currentStep - 1] : undefined;
   const isFailureEvent = currentEvent?.type === 'ERROR' || currentEvent?.type === 'LIMIT';
+  // "Where execution is" stays on the current event; "what memory looks like"
+  // falls back so the panels don't blank out when the program ends.
+  const stateEvent = useMemo(() => selectStateEvent(events, currentStep), [events, currentStep]);
 
   const codeLines = useMemo(() => (code ? code.split(/\r?\n/) : []), [code]);
 
@@ -215,9 +218,9 @@ function App() {
           <div className="glass-panel panel variable-inspector">
             <h2>
               Variable Inspector
-              {currentEvent && (
+              {stateEvent && (
                 <span className="scope-badge">
-                  {currentEvent.callStack?.length ? 'Local' : 'Global'}
+                  {stateEvent.callStack?.length ? 'Local' : 'Global'}
                 </span>
               )}
             </h2>

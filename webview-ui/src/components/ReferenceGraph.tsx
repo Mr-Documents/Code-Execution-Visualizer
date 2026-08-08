@@ -2,7 +2,7 @@ import React, { useMemo } from 'react';
 import ReactFlow, { Background, Controls, MarkerType, BackgroundVariant } from 'reactflow';
 import type { Node, Edge } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { useExecutionStore } from '../store/useExecutionStore';
+import { useExecutionStore, selectStateEvent } from '../store/useExecutionStore';
 
 const NODE_STYLE = {
   background: 'var(--panel-bg)',
@@ -38,7 +38,9 @@ function formatValue(value: unknown): string {
 export const ReferenceGraph: React.FC = () => {
   const events = useExecutionStore((state) => state.events);
   const currentStep = useExecutionStore((state) => state.currentStep);
-  const currentEvent = events[currentStep];
+  // Terminal events carry no state; show the last state that existed instead
+  // of blanking the graph the moment the program finishes.
+  const currentEvent = selectStateEvent(events, currentStep);
 
   const { nodes, edges } = useMemo(() => {
     const heap = currentEvent?.heap;
@@ -103,6 +105,15 @@ export const ReferenceGraph: React.FC = () => {
 
     return { nodes, edges };
   }, [currentEvent]);
+
+  if (nodes.length === 0) {
+    return (
+      <div className="placeholder" style={{ padding: '1rem' }}>
+        No objects in memory at this step. Arrays, objects and functions appear
+        here as they are created.
+      </div>
+    );
+  }
 
   return (
     <div style={{ width: '100%', height: '100%' }}>

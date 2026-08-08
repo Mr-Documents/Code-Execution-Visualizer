@@ -41,6 +41,40 @@ export interface ExecutionEvent {
 
 export type ExecutionPhase = 'idle' | 'loading' | 'ready' | 'unsupported' | 'failed';
 
+/** True if an event carries any inspectable program state. */
+function hasState(event: ExecutionEvent | undefined): boolean {
+  if (!event) return false;
+  return Object.keys(event.scope ?? {}).length > 0 || Object.keys(event.heap ?? {}).length > 0;
+}
+
+/**
+ * Picks the event the memory panels should render.
+ *
+ * END always — and a size-capped LIMIT by design — carries no scope or heap:
+ * the program has exited, so there is nothing live left to read. Rendering that
+ * directly blanked the graph, variable inspector and all, exactly when the run
+ * finished and the user wanted to study the result. Falling back to the last
+ * event that had state keeps the final picture on screen.
+ *
+ * The fallback is deliberately limited to those terminal events. A regular STEP
+ * with an empty scope is legitimately empty (nothing declared yet), and showing
+ * an earlier step's variables there would be a lie.
+ */
+export function selectStateEvent(
+  events: ExecutionEvent[],
+  currentStep: number
+): ExecutionEvent | undefined {
+  const current = events[currentStep];
+  if (!current) return undefined;
+  if (hasState(current)) return current;
+  if (current.type !== 'END' && current.type !== 'LIMIT') return current;
+
+  for (let i = currentStep - 1; i >= 0; i--) {
+    if (hasState(events[i])) return events[i];
+  }
+  return current;
+}
+
 interface ExecutionState {
   events: ExecutionEvent[];
   currentStep: number;

@@ -1,6 +1,6 @@
 import React, { useMemo } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { useExecutionStore } from '../store/useExecutionStore';
+import { useExecutionStore, selectStateEvent } from '../store/useExecutionStore';
 import type { VariableValue } from '../store/useExecutionStore';
 
 /** Stable, cheap display text for a variable's value. */
@@ -53,7 +53,8 @@ export const VariableInspector: React.FC = () => {
   const currentStep = useExecutionStore((state) => state.currentStep);
 
   const items = useMemo(() => {
-    const scope = events[currentStep]?.scope;
+    // Matches the graph: keep the final state visible once the program ends.
+    const scope = selectStateEvent(events, currentStep)?.scope;
     if (!scope) return [];
     const previousScope = currentStep > 0 ? events[currentStep - 1]?.scope : undefined;
 

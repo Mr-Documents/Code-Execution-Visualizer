@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { useExecutionStore, type ExecutionEvent } from './useExecutionStore';
+import { useExecutionStore, selectStateEvent, type ExecutionEvent } from './useExecutionStore';
 
 const step = (line: number, overrides: Partial<ExecutionEvent> = {}): ExecutionEvent => ({
   type: 'STEP',
@@ -167,6 +167,61 @@ describe('playback controls', () => {
   it('setPlaybackSpeed updates the speed', () => {
     useExecutionStore.getState().setPlaybackSpeed(300);
     expect(useExecutionStore.getState().playbackSpeed).toBe(300);
+  });
+});
+
+describe('selectStateEvent', () => {
+  const withState = (line: number): ExecutionEvent => ({
+    type: 'STEP',
+    line,
+    scope: { x: { type: 'number', value: line } },
+    heap: { 'ref-1': { type: 'object', value: {}, refs: [] } },
+    callStack: []
+  });
+  const terminal = (type: 'END' | 'LIMIT'): ExecutionEvent => ({
+    type, line: -1, scope: {}, heap: {}, callStack: []
+  });
+
+  it('returns the current event when it has state', () => {
+    const events = [withState(1), withState(2)];
+    expect(selectStateEvent(events, 1)).toBe(events[1]);
+  });
+
+  it('falls back to the last state-bearing event at END', () => {
+    // Regression: END carries no scope/heap because the program has exited,
+    // which blanked the graph and inspector the instant a run finished.
+    const events = [withState(1), withState(2), terminal('END')];
+    expect(selectStateEvent(events, 2)).toBe(events[1]);
+  });
+
+  it('falls back at a size-capped LIMIT, which also omits state', () => {
+    const events = [withState(1), terminal('LIMIT')];
+    expect(selectStateEvent(events, 1)).toBe(events[0]);
+  });
+
+  it('does NOT fall back for a STEP that is legitimately empty', () => {
+    // A step before anything is declared really has no variables; showing an
+    // earlier step's state there would misrepresent the program.
+    const empty: ExecutionEvent = { type: 'STEP', line: 3, scope: {}, heap: {}, callStack: [] };
+    const events = [withState(1), empty];
+    expect(selectStateEvent(events, 1)).toBe(empty);
+  });
+
+  it('does not fall back for an ERROR, which now carries crash state', () => {
+    const crash: ExecutionEvent = {
+      type: 'ERROR', line: 3, scope: {}, heap: {}, callStack: [], error: 'boom'
+    };
+    const events = [withState(1), crash];
+    expect(selectStateEvent(events, 1)).toBe(crash);
+  });
+
+  it('returns the terminal event itself when nothing before it had state', () => {
+    const events = [terminal('END')];
+    expect(selectStateEvent(events, 0)).toBe(events[0]);
+  });
+
+  it('returns undefined for an out-of-range step', () => {
+    expect(selectStateEvent([], 0)).toBeUndefined();
   });
 });
 

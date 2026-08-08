@@ -92,6 +92,11 @@ test('throwing script: reports ERROR with the failing line and message', async (
 
     // ERROR is terminal — nothing may follow it.
     assert.equal(events[events.length - 1].type, 'ERROR');
+
+    // The variables that caused the crash are the most useful thing to see;
+    // these frames are gone the moment execution resumes.
+    assert.equal(error.scope.a.value, '10');
+    assert.equal(error.scope.b.value, '0', 'b === 0 is what caused the division by zero');
 });
 
 test('infinite loop: halts at the step cap', async () => {
