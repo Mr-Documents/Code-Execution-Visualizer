@@ -344,44 +344,61 @@ function connectDebugWS(url) {
     const VISIBLE_SCOPE_TYPES = new Set(['local', 'block', 'closure', 'catch', 'script']);
 
     /**
-     * Captures everything visible from a paused frame, plus the reachable heap.
+     * Captures everything visible from the paused call stack, plus the
+     * reachable heap.
      *
-     * The whole scope chain is merged rather than just the innermost entry:
-     * inside a loop body the innermost scope holds only the loop variable, so
-     * reading one scope hid the enclosing function's variables — exactly the
-     * accumulators someone stepping through a loop wants to watch. The chain is
-     * ordered innermost-first, so the first binding of a name wins and inner
-     * declarations correctly shadow outer ones.
+     * Two things are merged, both innermost-first so inner declarations
+     * correctly shadow outer ones:
+     *
+     * 1. The current frame's own scope chain — a loop body's innermost scope
+     *    holds only the loop variable, so reading just that hid the enclosing
+     *    function's accumulators.
+     *
+     * 2. Every *other* target frame still on the stack. V8 only reports a
+     *    closure scope for variables a function actually references — a
+     *    function that never touches its caller's locals gets no closure
+     *    entry for them at all, even though they're still alive on the stack
+     *    above it. Reading each live frame's own locals directly is what
+     *    keeps a caller's variables visible while stepping through a call
+     *    that doesn't reference them, instead of the graph going blank for
+     *    the duration of the call.
+     *
+     * Frames that have already returned are correctly excluded: nothing still
+     * on the stack references them, matching real reachability.
      */
-    async function captureState(frame) {
+    async function captureState(callFrames) {
         const ctx = { heap: {}, seen: new Set(), count: 0 };
         const scope = {};
         const pending = [];
 
-        for (const scopeEntry of frame.scopeChain) {
-            if (!VISIBLE_SCOPE_TYPES.has(scopeEntry.type)) continue;
-            const objectId = scopeEntry.object && scopeEntry.object.objectId;
-            if (!objectId) continue;
+        for (const frame of callFrames) {
+            if (!isTargetFrame(frame)) continue;
 
-            let result;
-            try {
-                result = await sendCommand('Runtime.getProperties', { objectId, ownProperties: true });
-            } catch {
-                continue;
-            }
+            for (const scopeEntry of frame.scopeChain) {
+                if (!VISIBLE_SCOPE_TYPES.has(scopeEntry.type)) continue;
+                const objectId = scopeEntry.object && scopeEntry.object.objectId;
+                if (!objectId) continue;
 
-            for (const prop of result.result || []) {
-                if (!prop.name || !prop.value) continue;
-                if (MODULE_WRAPPER_NAMES.has(prop.name)) continue;
-                // Innermost scope wins; don't let an outer binding overwrite it.
-                if (Object.prototype.hasOwnProperty.call(scope, prop.name)) continue;
+                let result;
+                try {
+                    result = await sendCommand('Runtime.getProperties', { objectId, ownProperties: true });
+                } catch {
+                    continue;
+                }
 
-                const type = describeType(prop.value);
-                if (prop.value.objectId) {
-                    scope[prop.name] = { type, value: prop.value.type, ref: prop.value.objectId };
-                    pending.push(processObject(prop.value.objectId, type, ctx));
-                } else {
-                    scope[prop.name] = { type, value: safeValue(prop.value) };
+                for (const prop of result.result || []) {
+                    if (!prop.name || !prop.value) continue;
+                    if (MODULE_WRAPPER_NAMES.has(prop.name)) continue;
+                    // Innermost binding wins; don't let an outer frame overwrite it.
+                    if (Object.prototype.hasOwnProperty.call(scope, prop.name)) continue;
+
+                    const type = describeType(prop.value);
+                    if (prop.value.objectId) {
+                        scope[prop.name] = { type, value: prop.value.type, ref: prop.value.objectId };
+                        pending.push(processObject(prop.value.objectId, type, ctx));
+                    } else {
+                        scope[prop.name] = { type, value: safeValue(prop.value) };
+                    }
                 }
             }
         }
@@ -428,7 +445,7 @@ function connectDebugWS(url) {
 
         const line = frame.location.lineNumber + 1;
         const callStack = targetCallStack(callFrames);
-        const { scope, heap } = await captureState(frame);
+        const { scope, heap } = await captureState(callFrames);
 
         if (++stepCount > MAX_STEPS) {
             terminate('LIMIT', line, scope, heap, callStack, {

@@ -114,6 +114,29 @@ test('infinite loop: halts at the step cap', async () => {
     assert.equal(limit.stepLimit, STEP_LIMIT, 'LIMIT should report the cap it hit');
 });
 
+test('caller variables stay visible inside a call the callee does not reference', async () => {
+    // Regression: V8 only reports a closure scope for variables a function
+    // actually references. greet() never touches `friends`, so V8 gives no
+    // closure entry for it at all -- reading only the current frame's scope
+    // chain made it (and everything else declared by the caller) vanish from
+    // the graph for the entire duration of the call, then reappear on return.
+    const { events } = await trace(path.join(__dirname, '..', 'test.js'));
+
+    const insideGreet = events.filter((e) => (e.callStack || []).includes('greet'));
+    assert.ok(insideGreet.length > 0, 'expected steps inside greet()');
+
+    for (const event of insideGreet) {
+        const names = Object.keys(event.scope);
+        assert.ok(names.includes('friends'), `caller's 'friends' missing inside greet(), saw ${names}`);
+    }
+
+    // Never true after the fix: the heap should not go empty except at END.
+    assert.ok(
+        !events.some((e) => e.type === 'STEP' && Object.keys(e.heap).length === 0),
+        'heap should never be empty mid-trace once an object has been created'
+    );
+});
+
 test('enclosing variables stay visible inside a loop body', async () => {
     // Regression: only the innermost scope was read, so stepping through a loop
     // showed the loop counter and hid the data and accumulator being changed.
